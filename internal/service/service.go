@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -50,6 +51,7 @@ type Service struct {
 		Config *model.NodeSpec
 		Users  []model.UserSpec
 	}
+	appliedMu sync.RWMutex
 
 	pushInterval int // seconds
 	pullInterval int // seconds
@@ -736,8 +738,7 @@ func (s *Service) startKernel(nc *model.NodeSpec, users []model.UserSpec) bool {
 		return false
 	}
 
-	s.appliedState.Config = nc
-	s.appliedState.Users = users
+	s.setAppliedState(nc, users)
 
 	// Initialize node logger on first successful start
 	if s.nodeLog == nil {
@@ -749,6 +750,26 @@ func (s *Service) startKernel(nc *model.NodeSpec, users []model.UserSpec) bool {
 	})
 	s.nodeLog.Info(fmt.Sprintf("started, %d users", len(users)))
 	return true
+}
+
+func (s *Service) setAppliedState(config *model.NodeSpec, users []model.UserSpec) {
+	s.appliedMu.Lock()
+	s.appliedState.Config = config
+	s.appliedState.Users = append([]model.UserSpec(nil), users...)
+	s.appliedMu.Unlock()
+}
+
+func (s *Service) clearAppliedState() {
+	s.appliedMu.Lock()
+	s.appliedState.Config = nil
+	s.appliedState.Users = nil
+	s.appliedMu.Unlock()
+}
+
+func (s *Service) appliedConfig() *model.NodeSpec {
+	s.appliedMu.RLock()
+	defer s.appliedMu.RUnlock()
+	return s.appliedState.Config
 }
 
 // ensureRunning starts the kernel if it is not running and there are users +
@@ -913,7 +934,7 @@ func (s *Service) applyChanges(ctx context.Context, configChanged, usersChanged 
 	if s.lastConfig == nil || len(s.lastUsers) == 0 {
 		if len(s.lastUsers) == 0 {
 			s.kernel.Stop()
-			s.appliedState.Users = nil
+			s.clearAppliedState()
 		}
 		return
 	}
@@ -925,8 +946,7 @@ func (s *Service) applyChanges(ctx context.Context, configChanged, usersChanged 
 			nlog.Core().Warn(fmt.Sprintf("reload failed, restarting: %v", err))
 			s.startKernel(s.lastConfig, s.lastUsers)
 		} else {
-			s.appliedState.Config = s.lastConfig
-			s.appliedState.Users = s.lastUsers
+			s.setAppliedState(s.lastConfig, s.lastUsers)
 			if s.nodeLog != nil {
 				s.nodeLog.Info(fmt.Sprintf("config updated, %d users", len(s.lastUsers)))
 			}
@@ -1027,6 +1047,11 @@ func (s *Service) buildMetrics(status monitor.Status) map[string]interface{} {
 	s.metricsMu.RUnlock()
 
 	m := make(map[string]interface{})
+	if applied := s.appliedConfig(); applied != nil {
+		if attestation := runtimeAttestationMap(applied); attestation != nil {
+			m["runtime_attestation"] = attestation
+		}
+	}
 	online := s.tracker.CurrentOnline()
 
 	m["uptime"] = status.Uptime
@@ -1088,6 +1113,22 @@ func (s *Service) buildMetrics(status monitor.Status) map[string]interface{} {
 	}
 
 	return m
+}
+
+func runtimeAttestationMap(applied *model.NodeSpec) map[string]interface{} {
+	if applied == nil || applied.ControlPlaneRevision < 1 || applied.ServerPort < 1 || applied.ServerPort > 65535 || strings.TrimSpace(applied.Protocol) == "" {
+		return nil
+	}
+	hashBytes, err := hex.DecodeString(applied.ControlPlaneConfigHash)
+	if err != nil || len(hashBytes) != sha256.Size {
+		return nil
+	}
+	return map[string]interface{}{
+		"revision":    applied.ControlPlaneRevision,
+		"config_hash": strings.ToLower(applied.ControlPlaneConfigHash),
+		"protocol":    strings.ToLower(strings.TrimSpace(applied.Protocol)),
+		"listen_port": applied.ServerPort,
+	}
 }
 
 // computeConfigHash returns a deterministic hash of the node config.

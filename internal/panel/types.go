@@ -71,8 +71,8 @@ type MachineNode struct {
 
 // MachineNodesResponse is the response from GET /api/v2/server/machine/nodes.
 type MachineNodesResponse struct {
-	Nodes      []MachineNode      `json:"nodes"`
-	BaseConfig MachineBaseConfig  `json:"base_config"`
+	Nodes      []MachineNode     `json:"nodes"`
+	BaseConfig MachineBaseConfig `json:"base_config"`
 }
 
 // MachineBaseConfig holds polling intervals for machine mode.
@@ -84,14 +84,16 @@ type MachineBaseConfig struct {
 // NodeConfig is the response from GET /api/v1/server/UniProxy/config
 type NodeConfig struct {
 	// NodeID is populated in machine-mode WS events for routing.
-	NodeID          int                    `json:"node_id,omitempty"`
-	Protocol        string                 `json:"protocol"`
-	ListenIP        string                 `json:"listen_ip"`
-	ServerPort      int                    `json:"server_port"`
-	Network         string                 `json:"network"`
-	NetworkSettings map[string]interface{} `json:"networkSettings"`
-	BaseConfig      BaseConfig             `json:"base_config"`
-	Routes          []RouteRule            `json:"routes"`
+	NodeID            int                    `json:"node_id,omitempty"`
+	RuntimeRevision   int64                  `json:"runtime_revision,omitempty"`
+	RuntimeConfigHash string                 `json:"runtime_config_hash,omitempty"`
+	Protocol          string                 `json:"protocol"`
+	ListenIP          string                 `json:"listen_ip"`
+	ServerPort        int                    `json:"server_port"`
+	Network           string                 `json:"network"`
+	NetworkSettings   map[string]interface{} `json:"networkSettings"`
+	BaseConfig        BaseConfig             `json:"base_config"`
+	Routes            []RouteRule            `json:"routes"`
 
 	// Kernel settings (Xboard extension)
 	KernelType       string            `json:"kernel_type,omitempty"`      // "singbox" or "xray"

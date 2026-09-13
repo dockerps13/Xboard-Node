@@ -3,12 +3,17 @@ package model
 import "github.com/cedar2025/xboard-node/internal/config"
 
 type NodeSpec struct {
-	Protocol        string
-	ListenIP        string
-	ServerPort      int
-	Network         string
-	NetworkSettings map[string]any
-	Routes          []RouteRule
+	// ControlPlaneRevision and ControlPlaneConfigHash identify the exact panel
+	// document that produced this runtime. They are reported only after the
+	// kernel has successfully applied the configuration.
+	ControlPlaneRevision   int64
+	ControlPlaneConfigHash string
+	Protocol               string
+	ListenIP               string
+	ServerPort             int
+	Network                string
+	NetworkSettings        map[string]any
+	Routes                 []RouteRule
 
 	KernelType       string
 	KernelLogLevel   string
