@@ -72,7 +72,6 @@ func (s *HTTPServer) serve() {
 			return
 		}
 		s.active[conn] = struct{}{}
-		s.backend, s.host = s.backend, s.host
 		s.wg.Add(1)
 		s.mu.Unlock()
 		go s.handle(conn)
