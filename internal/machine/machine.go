@@ -43,6 +43,7 @@ type Orchestrator struct {
 
 	// Serializes discovery and per-node kernel restarts.
 	lifecycleMu sync.Mutex
+	discoverCh  chan struct{}
 
 	// Per-node mailbox keyed by node_id. Shared WS events are aggregated here
 	// and each node service drains the latest state when ready.
@@ -54,8 +55,7 @@ type Orchestrator struct {
 	ws       *panel.WSClient
 	wsCancel context.CancelFunc
 
-	// runCtx is stored from Run() so that onWSEvent can trigger rediscover
-	// for sync.nodes events without blocking the main loop.
+	// runCtx is stored from Run() for node restarts triggered by WS updates.
 	runCtx context.Context
 
 	pullInterval time.Duration
@@ -70,11 +70,12 @@ func New(cfg *config.Config) *Orchestrator {
 		MachineID: cfg.Machine.MachineID,
 	}
 	return &Orchestrator{
-		cfg:       cfg,
-		client:    panel.NewClient(panelCfg),
-		nodes:     make(map[int]*nodeHandle),
-		mailboxes: make(map[int]*controlplane.NodeMailbox),
-		statuses:  make(map[int]chan<- controlplane.StatusChange),
+		cfg:        cfg,
+		client:     panel.NewClient(panelCfg),
+		nodes:      make(map[int]*nodeHandle),
+		mailboxes:  make(map[int]*controlplane.NodeMailbox),
+		statuses:   make(map[int]chan<- controlplane.StatusChange),
+		discoverCh: make(chan struct{}, 1),
 	}
 }
 
@@ -110,6 +111,9 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 			return nil
 
 		case <-discoveryTicker.C:
+			o.rediscover(ctx)
+
+		case <-o.discoverCh:
 			o.rediscover(ctx)
 
 		case <-statusTicker.C:
@@ -417,7 +421,12 @@ func (o *Orchestrator) onWSEvent(event panel.WSEvent) {
 	// sync.nodes is a machine-level event, not per-node
 	if event.Type == panel.WSEventSyncNodes {
 		nlog.Core().Info("machine received sync.nodes, triggering immediate rediscovery")
-		go o.rediscover(o.runCtx)
+		// Coalesce bursts of notifications into at most one pending discovery.
+		// No unbounded goroutine queue while the panel is slow or unavailable.
+		select {
+		case o.discoverCh <- struct{}{}:
+		default:
+		}
 		return
 	}
 
