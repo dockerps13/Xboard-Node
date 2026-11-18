@@ -28,7 +28,9 @@ func TestResolveKernelForNode(t *testing.T) {
 		{"anytls forces singbox", NodeSpec{Protocol: "anytls"}, "xray", "singbox", false},
 		{"mieru forces singbox", NodeSpec{Protocol: "mieru"}, "xray", "singbox", false},
 		{"naive forces singbox", NodeSpec{Protocol: "naive"}, "xray", "singbox", false},
-		{"ss obfs rejected", NodeSpec{Protocol: "shadowsocks", Plugin: "obfs"}, "singbox", "", true},
+		{"ss http obfs supported", NodeSpec{Protocol: "shadowsocks", Plugin: "obfs", PluginOpt: "obfs=http;obfs-host=www.bing.com"}, "singbox", "singbox", false},
+		{"ss obfs forces singbox", NodeSpec{Protocol: "shadowsocks", Plugin: "obfs", PluginOpt: "obfs=http"}, "xray", "singbox", false},
+		{"ss tls obfs rejected", NodeSpec{Protocol: "shadowsocks", Plugin: "obfs", PluginOpt: "obfs=tls"}, "singbox", "", true},
 		{"plain ss", NodeSpec{Protocol: "shadowsocks"}, "singbox", "singbox", false},
 		{"vless decryption", NodeSpec{Protocol: "vless", Decryption: "mlkem768x25519plus"}, "singbox", "xray", false},
 		{"unknown protocol", NodeSpec{Protocol: "unknown"}, "singbox", "", true},
@@ -47,11 +49,21 @@ func TestResolveKernelForNode(t *testing.T) {
 func TestValidateNodeSpecRejectsUnsupportedSSPlugin(t *testing.T) {
 	for _, kernelType := range []string{"singbox", "xray"} {
 		t.Run(kernelType, func(t *testing.T) {
-			node := &NodeSpec{Protocol: "shadowsocks", Cipher: "aes-128-gcm", Plugin: "obfs", PluginOpt: "obfs=http"}
+			node := &NodeSpec{Protocol: "shadowsocks", Cipher: "aes-128-gcm", Plugin: "obfs", PluginOpt: "obfs=tls"}
 			err := ValidateNodeSpec(node, config.KernelConfig{Type: kernelType})
 			if err == nil {
 				t.Fatalf("expected unsupported SS plugin to fail validation for %s", kernelType)
 			}
 		})
+	}
+}
+
+func TestParseSimpleObfs(t *testing.T) {
+	enabled, host, err := ParseSimpleObfs("obfs", "obfs=http;obfs-host=www.bing.com;path=/")
+	if err != nil || !enabled || host != "www.bing.com" {
+		t.Fatalf("expected HTTP obfs host from panel, got enabled=%v host=%q err=%v", enabled, host, err)
+	}
+	if enabled, _, err := ParseSimpleObfs("obfs", "obfs=tls"); enabled || err == nil {
+		t.Fatalf("TLS obfs must remain unsupported until implemented")
 	}
 }
