@@ -16,7 +16,11 @@ func TestReportBatchIDIsOptInAndRawBytesUnchanged(t *testing.T) {
 		var report map[string]any
 		if err := json.NewDecoder(r.Body).Decode(&report); err != nil { t.Error(err) }
 		reports = append(reports, report)
-		_, _ = w.Write([]byte(`{"data":true}`))
+		if id, ok := report["report_id"].(string); ok {
+			_, _ = w.Write([]byte(`{"data":{"report_id":"` + id + `","accepted":true}}`))
+		} else {
+			_, _ = w.Write([]byte(`{"data":true}`))
+		}
 	}))
 	defer server.Close()
 	client := NewClient(config.PanelConfig{URL: server.URL, Token: "token", MachineID: 5, NodeID: 16})
