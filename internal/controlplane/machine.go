@@ -19,7 +19,10 @@ type MachinePanelControlPlane struct {
 	kcfg   config.KernelConfig
 	push   PushClient // virtual push client from WS mux (may be nil)
 
-	registerFn func(statuses chan<- StatusChange) *NodeMailbox
+	// The machine orchestrator already fetched this config for kernel selection.
+	// Reuse it for first bootstrap to avoid a redundant network round trip.
+	initialConfig *panel.NodeConfig
+	registerFn    func(statuses chan<- StatusChange) *NodeMailbox
 }
 
 // NewMachinePanelControlPlane creates a per-node control plane for machine mode.
@@ -38,6 +41,12 @@ func NewMachinePanelControlPlane(
 		push:       push,
 		registerFn: registerFn,
 	}
+}
+
+// SetInitialConfig passes the just-fetched full panel snapshot to the
+// per-node bootstrap. Call before Run starts; the snapshot is consumed once.
+func (p *MachinePanelControlPlane) SetInitialConfig(snapshot *panel.NodeConfig) {
+	p.initialConfig = snapshot
 }
 
 func (p *MachinePanelControlPlane) SupportsPolling() bool       { return true }
@@ -65,12 +74,17 @@ func (p *MachinePanelControlPlane) Initial(
 		bootstrap.PullInterval = hs.Settings.PullInterval
 	}
 
-	configSnapshot, err := p.client.GetConfig()
-	if err != nil {
-		return Bootstrap{}, fmt.Errorf("machine initial config: %w", err)
-	}
+	configSnapshot := p.initialConfig
+	p.initialConfig = nil
 	if configSnapshot == nil {
-		return Bootstrap{}, fmt.Errorf("machine initial config is nil")
+		var fetchErr error
+		configSnapshot, fetchErr = p.client.GetConfig()
+		if fetchErr != nil {
+			return Bootstrap{}, fmt.Errorf("machine initial config: %w", fetchErr)
+		}
+		if configSnapshot == nil {
+			return Bootstrap{}, fmt.Errorf("machine initial config is nil")
+		}
 	}
 	users, err := p.client.GetUsers()
 	if err != nil {
