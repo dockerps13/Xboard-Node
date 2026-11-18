@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -26,6 +27,7 @@ import (
 	"github.com/cedar2025/xboard-node/internal/model"
 	"github.com/cedar2025/xboard-node/internal/monitor"
 	"github.com/cedar2025/xboard-node/internal/nlog"
+	"github.com/cedar2025/xboard-node/internal/reportjournal"
 	"github.com/cedar2025/xboard-node/internal/tracker"
 )
 
@@ -1055,6 +1057,19 @@ func (s *Service) pushReportSync() {
 
 	if err := s.sink.Report(controlplane.ReportPayload{Traffic: traffic, Alive: aliveIPs, Online: online, CPU: status.CPU, Mem: [2]uint64{status.MemTotal, status.MemUsed}, Swap: [2]uint64{status.SwapTotal, status.SwapUsed}, Disk: [2]uint64{status.DiskTotal, status.DiskUsed}, Metrics: metrics}); err != nil {
 		nlog.Core().Warn("failed to push final report; retaining unpaid counters in memory", "error", err)
+		// Preserve an on-disk audit copy before this process exits. The
+		// legacy panel may already have charged these bytes despite the HTTP
+		// error, so this is a quarantine record, NOT an automatic replay queue.
+		if len(traffic) > 0 && s.cfg != nil && s.cfg.Kernel.ConfigDir != "" {
+			path := filepath.Join(s.cfg.Kernel.ConfigDir, "unconfirmed-reports")
+			if j, journalErr := reportjournal.Open(path); journalErr != nil {
+				nlog.Core().Error("cannot open unconfirmed traffic journal", "error", journalErr)
+			} else if batch, journalErr := j.Append(traffic); journalErr != nil {
+				nlog.Core().Error("cannot persist unconfirmed traffic", "error", journalErr)
+			} else {
+				nlog.Core().Warn("unconfirmed traffic saved for manual reconciliation; never replay blindly", "batch_id", batch.ID, "path", path)
+			}
+		}
 		// Keep the pending totals available to the owning Service for a
 		// controlled retry. Durable delivery requires a panel-side idempotent
 		// receipt before persisting/replaying reports across process restarts.
