@@ -416,13 +416,6 @@ func (o *Orchestrator) onWSEvent(event panel.WSEvent) {
 			return
 		}
 	}
-	if event.Config != nil && event.Config.RuntimeRevision > currentRevision {
-		o.mu.Lock()
-		if active, ok := o.nodes[nodeID]; ok && active == h {
-			active.revision = event.Config.RuntimeRevision
-		}
-		o.mu.Unlock()
-	}
 	effectiveKernel := o.cfg.Kernel
 	effectiveKernel.Type = currentKernel
 	translated, err := controlplane.TranslateWSEvent(event, effectiveKernel)
@@ -438,6 +431,16 @@ func (o *Orchestrator) onWSEvent(event panel.WSEvent) {
 	if !ok {
 		nlog.Core().Debug("machine ws event for unknown node", "node_id", nodeID, "type", event.Type)
 		return
+	}
+	// Record the revision only after the update was accepted and its
+	// configuration successfully translated. Invalid pushes must not prevent
+	// subsequent valid revisions from being applied.
+	if event.Config != nil && event.Config.RuntimeRevision > currentRevision {
+		o.mu.Lock()
+		if active, ok := o.nodes[nodeID]; ok && active == h {
+			active.revision = event.Config.RuntimeRevision
+		}
+		o.mu.Unlock()
 	}
 	mailbox.Apply(translated)
 }
