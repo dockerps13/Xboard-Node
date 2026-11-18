@@ -211,8 +211,14 @@ func proxyProtocolLine(remote, local net.Addr) (string, error) {
 	return fmt.Sprintf("PROXY %s %s %s %d %d\r\n", family, src.IP, dst.IP, src.Port, dst.Port), nil
 }
 
-func (s *HTTPServer) Close() {
+// StopAccepting closes only the public listening socket. Existing sessions
+// continue on their original backend while the old kernel drains.
+func (s *HTTPServer) StopAccepting() {
 	_ = s.listener.Close()
+}
+
+func (s *HTTPServer) Close() {
+	s.StopAccepting()
 	// Closing all active connections ensures a service stop cannot leak
 	// reverse-proxy goroutines beyond the node lifecycle.
 	s.mu.Lock()
