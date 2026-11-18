@@ -68,6 +68,11 @@ layer sends increments. Hot-reload and user removal sample trailing counters.
 Retired sing-box instances keep contributing bytes until drained; Xray retains
 its cumulative baseline across swaps.
 
+**Current shutdown behavior:** when the final report fails, the service
+restores the pending bytes into its in-memory tracker, preserving them for a
+controlled retry within that process. These bytes are **not durable across
+process exit or machine restart**; this change does not solve lost reports.
+
 **Outstanding mandatory commercial gate:** exactly-once billing cannot be
 guaranteed by a node-only change. The existing panel accepts non-idempotent
 traffic updates. It needs a database-backed report ID + atomic deduplication /
