@@ -31,8 +31,15 @@ final class IdempotentServerReportService
         if (!$raw) {
             throw new InvalidArgumentException('empty or invalid traffic batch');
         }
+        if (count($raw) > 20000) {
+            throw new InvalidArgumentException('report has too many users');
+        }
         ksort($raw, SORT_NUMERIC);
-        $hash = hash('sha256', json_encode($raw, JSON_THROW_ON_ERROR));
+        $canonical = json_encode($raw, JSON_THROW_ON_ERROR);
+        if (strlen($canonical) > 8 * 1024 * 1024) {
+            throw new InvalidArgumentException('report exceeds 8 MiB payload limit');
+        }
+        $hash = hash('sha256', $canonical);
 
         // Capture the time-dependent rate when first accepting a report.
         $server = $node->toArray();
