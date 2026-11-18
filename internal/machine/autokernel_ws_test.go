@@ -57,3 +57,34 @@ func TestMachineWSEventDropsStaleConfig(t *testing.T) {
 		t.Fatal("stale config pushed by panel must not replace the active node")
 	}
 }
+
+func TestInvalidWSPushDoesNotAdvanceNodeRevision(t *testing.T) {
+	const nodeID = 44
+	mailbox := controlplane.NewNodeMailbox()
+	mailbox.MarkReady()
+	handle := &nodeHandle{kernelType: "singbox", revision: 7, node: panel.MachineNode{ID: nodeID, Type: "shadowsocks"}}
+	orchestrator := &Orchestrator{
+		cfg: &config.Config{Kernel: config.KernelConfig{Type: "singbox"}},
+		nodes: map[int]*nodeHandle{nodeID: handle},
+		mailboxes: map[int]*controlplane.NodeMailbox{nodeID: mailbox},
+	}
+	// Unsupported OBFS with a higher revision must not poison the revision
+	// cursor and block a subsequent valid update.
+	orchestrator.onWSEvent(panel.WSEvent{
+		Type: panel.WSEventSyncConfig, NodeID: nodeID,
+		Config: &panel.NodeConfig{RuntimeRevision: 10, Protocol: "shadowsocks", ServerPort: 8080, Plugin: "obfs"},
+	})
+	if handle.revision != 7 {
+		t.Fatalf("invalid update unexpectedly advanced revision to %d", handle.revision)
+	}
+	orchestrator.onWSEvent(panel.WSEvent{
+		Type: panel.WSEventSyncConfig, NodeID: nodeID,
+		Config: &panel.NodeConfig{RuntimeRevision: 9, Protocol: "shadowsocks", ServerPort: 8080, Cipher: "aes-128-gcm"},
+	})
+	if state := mailbox.DrainIfReady(); !state.HasConfig {
+		t.Fatal("valid update was lost after rejecting invalid higher revision")
+	}
+	if handle.revision != 9 {
+		t.Fatalf("valid update did not advance revision, got %d", handle.revision)
+	}
+}
