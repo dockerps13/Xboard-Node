@@ -1,0 +1,147 @@
+package singbox
+
+import (
+	"context"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"strings"
+	"os"
+	"runtime"
+	"strconv"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/cedar2025/xboard-node/internal/config"
+	"github.com/cedar2025/xboard-node/internal/kernel"
+	"github.com/cedar2025/xboard-node/internal/model"
+)
+
+func TestMixedProtocolConcurrentLoad(t *testing.T) {
+	count := 100
+	if value := os.Getenv("XBOARD_TEST_CONNECTIONS"); value != "" {
+		n, err := strconv.Atoi(value)
+		if err != nil || n < 2 || n > 5000 {
+			t.Fatal("XBOARD_TEST_CONNECTIONS must be between 2 and 5000")
+		}
+		count = n
+	}
+	const uuid = "aaaaaaaa-1111-2222-3333-444444444444"
+	const payload = "xboard-load-check"
+	release := make(chan struct{})
+	var once sync.Once
+	unblock := func() { once.Do(func() { close(release) }) }
+	arrived := make(chan struct{}, count)
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(io.LimitReader(r.Body, 1024))
+		if err != nil || string(body) != payload {
+			http.Error(w, "bad payload", 400)
+			return
+		}
+		arrived <- struct{}{}
+		<-release
+		_, _ = io.WriteString(w, payload)
+	}))
+	defer target.Close()
+	defer unblock()
+
+	servers := make([]*SingBox, 2)
+	ports := make([]int, 2)
+	for i, protocol := range []string{"http", "socks"} {
+		reservation, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil { t.Fatal(err) }
+		ports[i] = reservation.Addr().(*net.TCPAddr).Port
+		reservation.Close()
+		server := New(config.KernelConfig{Type: "singbox", LogLevel: "error", ConfigDir: t.TempDir(),
+			CustomRoute: []map[string]any{{"ip_cidr": []string{"127.0.0.1/32"}, "outbound": "direct"}}})
+		if err := server.Start(&model.NodeSpec{Protocol: protocol, ServerPort: ports[i], ListenIP: "127.0.0.1"},
+			[]model.UserSpec{{ID: 1, UUID: uuid}}, kernel.TLSCert{}); err != nil { t.Fatal(err) }
+		servers[i] = server
+		defer server.Stop()
+	}
+	var baseline, peak, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&baseline)
+	baseG := runtime.NumGoroutine()
+	baseFD, _ := os.ReadDir("/proc/self/fd")
+	start := time.Now()
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	var wg sync.WaitGroup
+	errors := make(chan error, count)
+	for i := 0; i < count; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			transport := &http.Transport{DisableKeepAlives: true}
+			defer transport.CloseIdleConnections()
+			if i%2 == 0 {
+				transport.Proxy = func(*http.Request) (*url.URL, error) {
+					return url.Parse(fmt.Sprintf("http://%s:%s@127.0.0.1:%d", uuid, uuid, ports[0]))
+				}
+			} else {
+				transport.Proxy = func(*http.Request) (*url.URL, error) {
+					return url.Parse(fmt.Sprintf("socks5://%s:%s@127.0.0.1:%d", uuid, uuid, ports[1]))
+				}
+			}
+			req, err := http.NewRequestWithContext(ctx, "POST", target.URL, strings.NewReader(payload))
+			if err != nil { errors <- err; return }
+			resp, err := (&http.Client{Transport: transport}).Do(req)
+			if err != nil { errors <- err; return }
+			defer resp.Body.Close()
+			body, err := io.ReadAll(resp.Body)
+			if err != nil || resp.StatusCode != 200 || string(body) != payload {
+				errors <- fmt.Errorf("bad response: status=%d err=%v", resp.StatusCode, err)
+			}
+		}(i)
+	}
+	for i := 0; i < count; i++ {
+		select {
+		case <-arrived:
+		case err := <-errors:
+			unblock()
+			cancel()
+			wg.Wait()
+			t.Fatal(err)
+		case <-ctx.Done():
+			unblock()
+			wg.Wait()
+			t.Fatalf("only %d/%d requests reached target", i, count)
+		}
+	}
+	for i, server := range servers {
+		_, _, active, err := server.GetUserTraffic(ctx)
+		want := (count + 1 - i) / 2
+		if err != nil || active != want {
+			unblock()
+			cancel()
+			wg.Wait()
+			t.Fatalf("protocol %d active=%d want=%d err=%v", i, active, want, err)
+		}
+	}
+	runtime.ReadMemStats(&peak)
+	peakFD, _ := os.ReadDir("/proc/self/fd")
+	t.Logf("held=%d setup=%s heap_baseline=%d heap_held=%d goroutines_baseline=%d goroutines_held=%d fd_baseline=%d fd_held=%d", count, time.Since(start), baseline.HeapAlloc, peak.HeapAlloc, baseG, runtime.NumGoroutine(), len(baseFD), len(peakFD))
+	unblock()
+	wg.Wait()
+	close(errors)
+	for err := range errors { t.Error(err) }
+	deadline := time.Now().Add(10*time.Second)
+	for i, server := range servers {
+		want := int64((count + 1 - i) / 2 * len(payload))
+		for {
+			traffic, _, active, err := server.GetUserTraffic(context.Background())
+			if err == nil && active == 0 && traffic[1][0] >= want && traffic[1][1] >= want { break }
+			if time.Now().After(deadline) { t.Fatalf("protocol %d traffic=%v active=%d err=%v", i, traffic, active, err) }
+			time.Sleep(25*time.Millisecond)
+		}
+	}
+	runtime.GC()
+	runtime.ReadMemStats(&after)
+	afterFD, _ := os.ReadDir("/proc/self/fd")
+	t.Logf("completed=%d elapsed=%s heap_after_gc=%d goroutines_after=%d fd_after=%d", count, time.Since(start), after.HeapAlloc, runtime.NumGoroutine(), len(afterFD))
+}
