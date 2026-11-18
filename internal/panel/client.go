@@ -403,6 +403,20 @@ func (c *Client) authQuery() url.Values {
 	return q
 }
 
+// reportResultError describes a failed receipt without logging the response
+// body, which may contain credentials or other private panel data.
+type reportResultError struct {
+	stage string
+	status int
+}
+
+func (e *reportResultError) Error() string {
+	if e.status != 0 {
+		return fmt.Sprintf("report outcome unconfirmed: %s (HTTP %d)", e.stage, e.status)
+	}
+	return "report outcome unconfirmed: " + e.stage
+}
+
 // postJSON marshals a map payload (with auth fields injected) and POSTs it.
 func (c *Client) postJSON(path string, payload map[string]interface{}) error {
 	c.injectAuth(payload)
@@ -414,11 +428,17 @@ func (c *Client) postJSON(path string, payload map[string]interface{}) error {
 
 	resp, err := c.doRequest("POST", path, body, "")
 	if err != nil {
+		if path == "/api/v2/server/report" {
+			return &reportResultError{stage: "transport failure"}
+		}
 		return fmt.Errorf("post %s: %w", path, err)
 	}
 	defer drainAndClose(resp.Body)
 
 	if resp.StatusCode != http.StatusOK {
+		if path == "/api/v2/server/report" {
+			return &reportResultError{stage: "non-success response", status: resp.StatusCode}
+		}
 		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		return fmt.Errorf("status %d: %s", resp.StatusCode, respBody)
 	}
@@ -428,7 +448,7 @@ func (c *Client) postJSON(path string, payload map[string]interface{}) error {
 	if path == "/api/v2/server/report" {
 		raw, err := io.ReadAll(io.LimitReader(resp.Body, 65536))
 		if err != nil {
-			return fmt.Errorf("read report response: %w", err)
+			return &reportResultError{stage: "receipt read failure"}
 		}
 		var envelope map[string]json.RawMessage
 		if json.Unmarshal(raw, &envelope) == nil {
@@ -451,14 +471,13 @@ func (c *Client) postJSON(path string, payload map[string]interface{}) error {
 				} `json:"data"`
 			}
 			if err := json.Unmarshal(raw, &receipt); err != nil {
-				return fmt.Errorf("invalid idempotent report receipt: %w", err)
+				return &reportResultError{stage: "invalid idempotent receipt"}
 			}
 			if receipt.Data.ReportID != requestedID || !receipt.Data.Accepted {
-				return fmt.Errorf("idempotent report receipt mismatch or not accepted")
+				return &reportResultError{stage: "idempotent receipt mismatch or not accepted"}
 			}
 		}
 	}
-	c.apiSuccess.Add(1)
 	return nil
 }
 
