@@ -94,10 +94,9 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 	// empty machine before the first node is attached.
 	o.tryStartWS(ctx)
 
-	// Start initial nodes.
-	for _, n := range nodesResp.Nodes {
-		o.startNode(ctx, n)
-	}
+	// Bound parallel startup so one slow panel node-config request cannot
+	// delay all other machine nodes, without creating a request stampede.
+	o.startDiscoveredNodes(ctx, nodesResp.Nodes)
 
 	discoveryTicker := time.NewTicker(o.pullInterval)
 	statusTicker := time.NewTicker(o.pushInterval)
@@ -279,6 +278,30 @@ func (o *Orchestrator) stopAll() {
 	}
 }
 
+// startDiscoveredNodes bounds concurrent config fetches and node launches to
+// keep panel load predictable while avoiding head-of-line blocking when a
+// single node's REST config endpoint is slow.
+func (o *Orchestrator) startDiscoveredNodes(ctx context.Context, nodes []panel.MachineNode) {
+	const parallelNodes = 4
+	sem := make(chan struct{}, parallelNodes)
+	var wg sync.WaitGroup
+	for _, node := range nodes {
+		select {
+		case <-ctx.Done():
+			wg.Wait()
+			return
+		case sem <- struct{}{}:
+		}
+		wg.Add(1)
+		go func(n panel.MachineNode) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			o.startNode(ctx, n)
+		}(node)
+	}
+	wg.Wait()
+}
+
 // ─── Node discovery ──────────────────────────────────────────────────────
 
 func (o *Orchestrator) rediscover(ctx context.Context) {
@@ -309,9 +332,7 @@ func (o *Orchestrator) rediscover(ctx context.Context) {
 		o.stopNode(id)
 	}
 
-	for _, n := range nodesResp.Nodes {
-		o.startNode(ctx, n) // no-op if already running
-	}
+	o.startDiscoveredNodes(ctx, nodesResp.Nodes)
 }
 
 // ─── Machine status reporting ────────────────────────────────────────────
