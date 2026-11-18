@@ -96,3 +96,27 @@ func TestHTTPPrefaceRejectsIncorrectHost(t *testing.T) {
 		t.Fatal("wrong host should not reach Shadowsocks backend")
 	}
 }
+
+func TestFailureLogWindows(t *testing.T) {
+	server, err := ListenHTTP("127.0.0.1:0", "127.0.0.1:1", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+	server.recordFailure(0)
+	first := server.failures[0].last
+	server.recordFailure(0)
+	server.recordFailure(0)
+	if server.failures[0].suppressed != 2 || !server.failures[0].last.Equal(first) {
+		t.Fatal("repeated failures should be suppressed")
+	}
+	server.recordFailure(1)
+	if server.failures[1].last.IsZero() || server.failures[1].suppressed != 0 {
+		t.Fatal("backend failures must have an independent window")
+	}
+	server.failures[0].last = time.Now().Add(-2 * time.Minute)
+	server.recordFailure(0)
+	if server.failures[0].suppressed != 0 || time.Since(server.failures[0].last) > time.Minute {
+		t.Fatal("expired window should reset")
+	}
+}
