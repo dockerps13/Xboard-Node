@@ -42,7 +42,7 @@ func (p *PanelControlPlane) Initial(ctx context.Context, metricsFn func() map[st
 		return Bootstrap{}, fmt.Errorf("handshake: %w", err)
 	}
 
-	bootstrap := Bootstrap{PushInterval: hs.Settings.PushInterval, PullInterval: hs.Settings.PullInterval}
+	bootstrap := Bootstrap{PushInterval: hs.Settings.PushInterval, PullInterval: hs.Settings.PullInterval, IdempotentReports: hs.Settings.IdempotentReports}
 	if hs.WebSocket.Enabled && hs.WebSocket.WSURL != "" {
 		bootstrap.Push = p.newPushClient(metricsFn, events, statuses, hs.WebSocket.WSURL)
 		return bootstrap, nil
