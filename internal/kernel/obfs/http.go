@@ -13,6 +13,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/cedar2025/xboard-node/internal/nlog"
 )
 
 const (
@@ -31,6 +33,8 @@ type HTTPServer struct {
 	host     string
 	active   map[net.Conn]struct{}
 	wg       sync.WaitGroup
+	failureMu sync.Mutex
+	failures [3]failureWindow
 }
 
 func ListenHTTP(addr, backend, host string) (*HTTPServer, error) {
@@ -45,6 +49,29 @@ func ListenHTTP(addr, backend, host string) (*HTTPServer, error) {
 	s.wg.Add(1)
 	go s.serve()
 	return s, nil
+}
+
+type failureWindow struct {
+	last time.Time
+	suppressed uint64
+}
+
+// recordFailure uses a fixed number of buckets per listener, never per IP.
+// Log the first failure immediately, then at most once per minute per category.
+func (s *HTTPServer) recordFailure(category int) {
+	now := time.Now()
+	s.failureMu.Lock()
+	w := &s.failures[category]
+	if !w.last.IsZero() && now.Sub(w.last) < time.Minute {
+		w.suppressed++
+		s.failureMu.Unlock()
+		return
+	}
+	count := w.suppressed
+	w.last, w.suppressed = now, 0
+	s.failureMu.Unlock()
+	reasons := [...]string{"handshake_failed", "backend_unavailable", "response_write_failed"}
+	nlog.Core().Warn("ss http obfs failure", "listener", s.Addr().String(), "category", reasons[category], "suppressed_since_last_log", count)
 }
 
 func (s *HTTPServer) Addr() net.Addr { return s.listener.Addr() }
@@ -96,6 +123,7 @@ func (s *HTTPServer) handle(conn net.Conn) {
 	reader := bufio.NewReaderSize(conn, 4096)
 	key, err := readHTTPPreface(reader, expectedHost)
 	if err != nil {
+		s.recordFailure(0)
 		return
 	}
 	if err := conn.SetReadDeadline(time.Time{}); err != nil {
@@ -103,6 +131,7 @@ func (s *HTTPServer) handle(conn net.Conn) {
 	}
 	backend, err := net.DialTimeout("tcp", backendAddr, backendTimeout)
 	if err != nil {
+		s.recordFailure(1)
 		return
 	}
 	defer backend.Close()
@@ -111,6 +140,7 @@ func (s *HTTPServer) handle(conn net.Conn) {
 	registerOrigin(backendLocal, conn.RemoteAddr())
 	defer unregisterOrigin(backendLocal)
 	if _, err := io.WriteString(conn, switchingProtocolsResponse(key)); err != nil {
+		s.recordFailure(2)
 		return
 	}
 	// Terminate both directions when either side disconnects. Waiting for
