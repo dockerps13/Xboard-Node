@@ -35,6 +35,7 @@ type APIMetrics struct {
 }
 
 type Bootstrap struct {
+	IdempotentReports bool // panel explicitly confirms atomic report-ID deduplication
 	PushInterval int
 	PullInterval int
 	Push         PushClient
