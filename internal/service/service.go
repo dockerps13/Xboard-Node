@@ -1025,9 +1025,14 @@ func (s *Service) reportWithJournal(payload controlplane.ReportPayload) error {
 		return fmt.Errorf("idempotent report journal is not initialized")
 	}
 	if len(payload.Traffic) > 0 {
-		if _, err := s.reportJournal.Append(payload.Traffic); err != nil {
-			// Nothing has been sent; retain the bytes for the next tick.
-			s.tracker.RestoreTraffic(payload.Traffic)
+		stored, err := s.reportJournal.Append(payload.Traffic)
+		if err != nil {
+			// Append returns a non-empty ID if rename succeeded but the
+			// directory sync failed. Such a file may exist on disk; do not
+			// restore the same bytes into a second batch in that case.
+			if stored.ID == "" {
+				s.tracker.RestoreTraffic(payload.Traffic)
+			}
 			return fmt.Errorf("persist report batch: %w", err)
 		}
 	}
