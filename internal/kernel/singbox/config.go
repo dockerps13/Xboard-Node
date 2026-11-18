@@ -751,6 +751,11 @@ func buildAnyTLS(base M, nc *model.NodeSpec, users []model.UserSpec, tc kernel.T
 
 func buildNaive(base M, nc *model.NodeSpec, users []model.UserSpec, tc kernel.TLSCert) M {
 	base["type"] = "naive"
+	// The vendored sing-box Naive inbound mutates ALPN on a background
+	// HTTP/2 listener while starting HTTP/3, causing a TLS data race.
+	// Default to stable TCP/HTTP2; QUIC must be enabled explicitly
+	// when its upstream TLS initialization is fixed.
+	base["network"] = "tcp"
 
 	userList := make([]M, 0, len(users))
 	for _, u := range users {
