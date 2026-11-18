@@ -11,6 +11,7 @@ import (
 	"github.com/cedar2025/xboard-node/internal/kernel"
 	"github.com/cedar2025/xboard-node/internal/limiter"
 	"github.com/cedar2025/xboard-node/internal/model"
+	"github.com/cedar2025/xboard-node/internal/tracker"
 	"golang.org/x/time/rate"
 )
 
@@ -100,6 +101,7 @@ func newTestService(k *fakeKernel) *Service {
 	sharedLimiter := limiter.New()
 	s := &Service{
 		kernel:       k,
+		tracker:      tracker.New(),
 		limiter:      sharedLimiter,
 		speedTracker: limiter.NewSpeedTracker(sharedLimiter),
 		cert:         cert.NewManager(config.CertConfig{}),
