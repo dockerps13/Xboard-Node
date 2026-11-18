@@ -53,4 +53,13 @@ func TestSingBoxStartsHTTPObfsWithNativeUDP(t *testing.T) {
 	if err != nil || !strings.Contains(line, "101 Switching Protocols") {
 		t.Fatalf("obfs frontend did not upgrade the connection: %q, %v", line, err)
 	}
+	_ = conn.Close()
+
+	// A configuration update must not lose the public HTTP obfs port.
+	if err := server.Reload(node, users, kernel.TLSCert{}); err != nil {
+		t.Fatalf("HTTP obfs reload must preserve the listener: %v", err)
+	}
+	if !server.IsRunning() {
+		t.Fatal("kernel went offline during SS obfs reload")
+	}
 }
