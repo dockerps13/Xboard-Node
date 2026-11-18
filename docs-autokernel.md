@@ -89,6 +89,36 @@ not yet been sampled, and does not journal periodic reports before sending.
 The report journal package exposes an `Acknowledge` operation only for future
 use with an explicit panel-side idempotent receipt.
 
+### Opt-in idempotent wire contract (node implementation)
+
+The new reporting path is **disabled by default**, including on existing
+`soulook.org` installations. A compatible panel must respond to the V2
+handshake with:
+
+```json
+{"settings":{"push_interval":60,"pull_interval":60,"idempotent_reports":true}}
+```
+
+Then each traffic report carries a stable `report_id` (32 lowercase hex
+characters) and the normal raw `traffic` map. The panel must return a
+**matching, explicit receipt**, for example:
+
+```json
+{"data":{"report_id":"0123456789abcdef0123456789abcdef","accepted":true}}
+```
+
+The node writes the batch to
+`kernel.config_dir/idempotent-reports/<report_id>.json` **before sending**,
+retries the *same* ID after errors/restarts, and removes the local batch
+only after validating the matching receipt. Each reporting tick drains at
+most four pending batches, avoiding unbounded blocking under high load.
+
+Do not advertise `idempotent_reports=true` on the panel until the panel has
+the transactional database ledger and worker described below. A legacy
+HTTP 200 response without a matching receipt leaves the batch on disk.
+An `accepted=true` receipt means durable acceptance, not necessarily that
+asynchronous billing has completed.
+
 ### Panel implementation required for commercial billing
 
 Before enabling automatic durable retries or labelling the deployment
