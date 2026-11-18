@@ -58,6 +58,12 @@ jobs:
           export LD_LIBRARY_PATH="$scratch"
           go test -c -tags "with_quic with_utls with_wireguard with_clash_api with_naive_outbound with_purego" -o "$scratch/naive.test" ./internal/kernel/singbox
           "$scratch/naive.test" -test.v -test.count=1 -test.timeout=3m -test.run '^TestNaiveClientRoundTrip$'
+      - name: Mixed protocol concurrent load (100 to 5000)
+        run: |
+          ulimit -n 65536
+          for n in 100 500 1000 5000; do
+            XBOARD_TEST_CONNECTIONS="$n" go test -v -count=1 -timeout 3m -tags "with_quic with_utls with_wireguard with_clash_api" ./internal/kernel/singbox -run '^TestMixedProtocolConcurrentLoad$'
+          done
       - name: Build release candidate binaries
         run: |
           make build-linux build-linux-arm64 VERSION=v1.0.0-rc.2-${GITHUB_SHA:0:12}
