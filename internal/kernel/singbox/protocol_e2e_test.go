@@ -35,7 +35,7 @@ func TestProtocolClientRoundTrip(t *testing.T) {
 	defer target.Close()
 	targetAddr := target.Listener.Addr().String()
 
-	for _, protocol := range []string{"shadowsocks", "vmess", "vless", "trojan", "hysteria2", "tuic", "anytls", "socks", "http"} {
+	for _, protocol := range []string{"shadowsocks", "vmess", "vless", "trojan", "hysteria2", "tuic", "anytls", "socks", "http", "naive", "mieru"} {
 		t.Run(protocol, func(t *testing.T) {
 			reservation, err := net.Listen("tcp", "127.0.0.1:0")
 			if err != nil {
@@ -53,13 +53,19 @@ func TestProtocolClientRoundTrip(t *testing.T) {
 				out["uuid"], out["security"] = credential, "auto"
 			case "vless":
 				out["uuid"] = credential
-			case "socks", "http":
+			case "socks", "http", "mieru":
 				out["username"], out["password"] = credential, credential
-			case "trojan", "hysteria2", "tuic", "anytls":
+				if protocol == "mieru" {
+					out["transport"] = "TCP"
+				}
+			case "trojan", "hysteria2", "tuic", "anytls", "naive":
 				node.TLS = 1
 				cert = testSelfSignedTLS(t)
 				out["password"] = credential
 				out["tls"] = M{"enabled": true, "server_name": "localhost", "certificate": string(cert.CertPEM)}
+				if protocol == "naive" {
+					out["username"] = "1"
+				}
 				if protocol == "tuic" {
 					out["uuid"] = credential
 					// Match the server default ALPN for TUIC over QUIC.
