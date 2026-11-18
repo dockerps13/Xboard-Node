@@ -916,3 +916,9 @@ func TestBuildInboundMieruDefaultsToTCP(t *testing.T) {
 		})
 	}
 }
+
+func TestBuildInbound_RespectsPanelListenIP(t *testing.T) {
+	nc := testNodeSpec(&panel.NodeConfig{Protocol: "shadowsocks", Cipher: "aes-128-gcm", ListenIP: "127.0.0.1", ServerPort: 8388})
+	inbound := buildInbound(nc, testUsers, kernel.TLSCert{})
+	assertMapValue(t, inbound, "listen", "127.0.0.1")
+}
