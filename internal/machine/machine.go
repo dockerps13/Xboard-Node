@@ -24,6 +24,7 @@ type nodeHandle struct {
 	done       chan struct{}
 	mailbox    *controlplane.NodeMailbox
 	kernelType string
+	revision   int64
 	node       panel.MachineNode
 }
 
@@ -181,6 +182,9 @@ func (o *Orchestrator) startNode(ctx context.Context, mn panel.MachineNode) {
 	o.mu.Lock()
 	if h, ok := o.nodes[mn.ID]; ok {
 		h.kernelType = nodeCfg.Kernel.Type
+		if initialSnapshot != nil {
+			h.revision = initialSnapshot.RuntimeRevision
+		}
 	}
 	o.mu.Unlock()
 
@@ -369,9 +373,11 @@ func (o *Orchestrator) onWSEvent(event panel.WSEvent) {
 	o.mu.Lock()
 	h, exists := o.nodes[nodeID]
 	currentKernel := ""
+	var currentRevision int64
 	var attachedNode panel.MachineNode
 	if exists {
 		currentKernel = h.kernelType
+		currentRevision = h.revision
 		attachedNode = h.node
 	}
 	o.mu.Unlock()
@@ -380,6 +386,10 @@ func (o *Orchestrator) onWSEvent(event panel.WSEvent) {
 		return
 	}
 	if event.Config != nil {
+		if currentRevision > 0 && event.Config.RuntimeRevision > 0 && event.Config.RuntimeRevision < currentRevision {
+			nlog.Core().Debug("machine: stale config push ignored", "node_id", nodeID)
+			return
+		}
 		desiredKernel, selectErr := model.ResolveKernelForNode(model.NodeSpecFromPanel(event.Config), currentKernel)
 		if selectErr != nil {
 			nlog.Core().Warn("machine: unsupported node update, keeping running config",
@@ -405,6 +415,13 @@ func (o *Orchestrator) onWSEvent(event panel.WSEvent) {
 			}()
 			return
 		}
+	}
+	if event.Config != nil && event.Config.RuntimeRevision > currentRevision {
+		o.mu.Lock()
+		if active, ok := o.nodes[nodeID]; ok && active == h {
+			active.revision = event.Config.RuntimeRevision
+		}
+		o.mu.Unlock()
 	}
 	effectiveKernel := o.cfg.Kernel
 	effectiveKernel.Type = currentKernel
