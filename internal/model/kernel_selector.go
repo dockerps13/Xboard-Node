@@ -25,7 +25,10 @@ func ResolveKernelForNode(n *NodeSpec, preferred string) (string, error) {
 		return "", fmt.Errorf("unrecognized kernel %q", preferred)
 	}
 	if protocol == "shadowsocks" && strings.TrimSpace(n.Plugin) != "" {
-		return "", fmt.Errorf("shadowsocks plugin %q requires a compatible server-side adapter; neither embedded inbound handles it", n.Plugin)
+		if _, _, err := ParseSimpleObfs(n.Plugin, n.PluginOpt); err != nil {
+			return "", err
+		}
+		return "singbox", nil
 	}
 	switch protocol {
 	case "hysteria", "hysteria2", "tuic", "anytls", "naive", "mieru":
