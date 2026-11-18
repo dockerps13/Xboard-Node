@@ -6,6 +6,7 @@ use App\Jobs\ApplyIdempotentServerReportJob;
 use App\Models\Server;
 use App\Services\Plugin\HookManager;
 use Illuminate\Support\Facades\DB;
+use DomainException;
 use InvalidArgumentException;
 use RuntimeException;
 
@@ -68,7 +69,7 @@ final class IdempotentServerReportService
                 ->first();
             if (!$existing || !hash_equals((string) $existing->payload_hash, $hash)) {
                 // Same ID with altered bytes must never silently reuse a receipt.
-                throw new RuntimeException('report_id already used with a different payload');
+                throw new DomainException('report_id already used with a different payload');
             }
             return (int) $existing->id;
         }, 3);
