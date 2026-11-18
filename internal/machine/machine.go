@@ -320,6 +320,13 @@ func runBoundedMachineNodes(ctx context.Context, nodes []panel.MachineNode, limi
 // ─── Node discovery ──────────────────────────────────────────────────────
 
 func (o *Orchestrator) rediscover(ctx context.Context) {
+	// Serialize the request as well as its application: a delayed older
+	// discovery response must not stop nodes from a newer snapshot.
+	o.lifecycleMu.Lock()
+	defer o.lifecycleMu.Unlock()
+	if ctx.Err() != nil {
+		return
+	}
 	nodesResp, err := o.client.GetMachineNodes()
 	if err != nil {
 		nlog.Core().Warn("machine node discovery failed", "error", err)
@@ -340,8 +347,9 @@ func (o *Orchestrator) rediscover(ctx context.Context) {
 	}
 	o.mu.Unlock()
 
-	o.lifecycleMu.Lock()
-	defer o.lifecycleMu.Unlock()
+	if ctx.Err() != nil {
+		return
+	}
 
 	for _, id := range toRemove {
 		o.stopNode(id)
