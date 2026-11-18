@@ -38,6 +38,7 @@ type Orchestrator struct {
 
 	mu    sync.Mutex
 	nodes map[int]*nodeHandle // node_id → handle
+
 	// Serializes discovery and per-node kernel restarts.
 	lifecycleMu sync.Mutex
 
