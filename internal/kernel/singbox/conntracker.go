@@ -125,6 +125,7 @@ func (u *userStats) aliveIPList() map[string]bool {
 type ConnTracker struct {
 	usersMu sync.RWMutex
 	users   map[int]*userStats  // userID → stats
+	identityAliases map[string]string // protocol username -> canonical UUID
 	uuidMap map[string]int      // UUID → userID (for lookup in RoutedConnection)
 	connMap map[string]net.Conn // connID → conn (only for force-close support)
 
@@ -166,7 +167,12 @@ func (t *ConnTracker) SetDeviceLimitFunc(fn func(uuid string) (int, bool)) {
 // structs exist for all users. Old users that are no longer present keep
 // their stats until their connections drain.
 func (t *ConnTracker) SetUserMap(m map[string]int) {
+	t.setUserIdentities(m, nil)
+}
+
+func (t *ConnTracker) setUserIdentities(m map[string]int, aliases map[string]string) {
 	t.usersMu.Lock()
+	t.identityAliases = aliases
 	t.uuidMap = m
 	for _, uid := range m {
 		if _, ok := t.users[uid]; !ok {
@@ -220,6 +226,9 @@ func (t *ConnTracker) RoutedConnection(
 	}
 
 	t.usersMu.RLock()
+	if canonical, ok := t.identityAliases[uuid]; ok {
+		uuid = canonical
+	}
 	uid := t.uuidMap[uuid]
 	us := t.users[uid]
 	t.usersMu.RUnlock()
@@ -278,6 +287,9 @@ func (t *ConnTracker) RoutedPacketConnection(
 	sourceIP := metadata.Source.Addr.String()
 
 	t.usersMu.RLock()
+	if canonical, ok := t.identityAliases[uuid]; ok {
+		uuid = canonical
+	}
 	uid := t.uuidMap[uuid]
 	us := t.users[uid]
 	t.usersMu.RUnlock()
