@@ -100,34 +100,34 @@ rollback_install() {
     systemctl stop "$SERVICE_NAME" >/dev/null 2>&1 || return 1
     if [ -n "$BACKUP_PATH" ] && [ -d "$BACKUP_PATH" ]; then
         if [ -f "$BACKUP_PATH/xboard-node" ]; then
-            install -m 755 "$BACKUP_PATH/xboard-node" "$BINARY_PATH"
+            install -m 755 "$BACKUP_PATH/xboard-node" "$BINARY_PATH" || return 1
         else
-            rm -f "$BINARY_PATH"
+            rm -f "$BINARY_PATH" || return 1
         fi
         if [ -f "$BACKUP_PATH/config.yml" ]; then
-            install -m 600 "$BACKUP_PATH/config.yml" "$CONFIG_FILE"
+            install -m 600 "$BACKUP_PATH/config.yml" "$CONFIG_FILE" || return 1
         else
-            rm -f "$CONFIG_FILE"
+            rm -f "$CONFIG_FILE" || return 1
         fi
         if [ -f "$BACKUP_PATH/credentials.env" ]; then
-            install -m 600 "$BACKUP_PATH/credentials.env" "$CREDENTIALS_FILE"
+            install -m 600 "$BACKUP_PATH/credentials.env" "$CREDENTIALS_FILE" || return 1
         else
-            rm -f "$CREDENTIALS_FILE"
+            rm -f "$CREDENTIALS_FILE" || return 1
         fi
         if [ -f "$BACKUP_PATH/install-meta.json" ]; then
-            install -m 644 "$BACKUP_PATH/install-meta.json" "$INSTALL_META"
+            install -m 644 "$BACKUP_PATH/install-meta.json" "$INSTALL_META" || return 1
         else
-            rm -f "$INSTALL_META"
+            rm -f "$INSTALL_META" || return 1
         fi
         if [ -f "$BACKUP_PATH/xbctl" ]; then
-            install -m 755 "$BACKUP_PATH/xbctl" "$CLI_PATH"
+            install -m 755 "$BACKUP_PATH/xbctl" "$CLI_PATH" || return 1
         else
-            rm -f "$CLI_PATH"
+            rm -f "$CLI_PATH" || return 1
         fi
         if [ -f "$BACKUP_PATH/${SERVICE_NAME}" ]; then
-            install -m 644 "$BACKUP_PATH/${SERVICE_NAME}" "$SERVICE_PATH"
+            install -m 644 "$BACKUP_PATH/${SERVICE_NAME}" "$SERVICE_PATH" || return 1
         else
-            rm -f "$SERVICE_PATH"
+            rm -f "$SERVICE_PATH" || return 1
         fi
     fi
     load_health_port_from_config "$CONFIG_FILE" || true
@@ -888,4 +888,6 @@ main() {
     esac
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]:-}" == "$0" || -z "${BASH_SOURCE[0]:-}" ]]; then
+    main "$@"
+fi
