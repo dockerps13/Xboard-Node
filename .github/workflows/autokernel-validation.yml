@@ -39,10 +39,10 @@ jobs:
       - name: Static analysis
         run: go vet -tags "with_quic with_utls with_wireguard with_clash_api" ./...
       - name: Race-sensitive kernel and control-plane tests
-        run: go test -race -tags "with_quic with_utls with_wireguard with_clash_api" ./internal/model ./internal/machine ./internal/controlplane ./internal/tracker ./internal/reportjournal ./internal/service ./internal/panel ./internal/kernel/singbox ./internal/monitor
+        run: go test -race -tags "with_quic with_utls with_wireguard with_clash_api" ./internal/model ./internal/machine ./internal/controlplane ./internal/tracker ./internal/reportjournal ./internal/service ./internal/panel ./internal/kernel/singbox ./internal/kernel/obfs ./internal/monitor
       - name: Build release candidate binaries
         run: |
-          make build-linux build-linux-arm64 VERSION=autokernel-rc-${GITHUB_SHA:0:12}
+          make build-linux build-linux-arm64 VERSION=v1.0.0-rc.2-${GITHUB_SHA:0:12}
           mkdir -p dist
           cp xboard-node-linux-amd64 xboard-node-linux-arm64 xbctl-linux-amd64 xbctl-linux-arm64 dist/
           (cd dist && sha256sum xboard-node-linux-* xbctl-linux-* > SHA256SUMS)
@@ -60,14 +60,14 @@ jobs:
           retention-days: 30
 
   publish-rc:
-    name: Publish v1.0.0-rc.1 (test only)
+    name: Publish v1.0.0-rc.2 (test only)
     needs: test
     if: github.event_name == 'push' && github.ref == 'refs/heads/feature/autokernel-stage1'
     runs-on: ubuntu-latest
     permissions:
       contents: write
     concurrency:
-      group: autokernel-rc-1-publication
+      group: autokernel-rc-2-publication
       cancel-in-progress: false
     steps:
       - uses: actions/download-artifact@v4
@@ -83,11 +83,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
-          if gh release view v1.0.0-rc.1 >/dev/null 2>&1; then
+          if gh release view v1.0.0-rc.2 >/dev/null 2>&1; then
             echo "RC already exists; refusing to overwrite assets."
             exit 0
           fi
-          gh release create v1.0.0-rc.1 dist/* \
+          gh release create v1.0.0-rc.2 dist/* \
             --target "$GITHUB_SHA" --prerelease --latest=false \
-            --title "Xboard-Node v1.0.0-rc.1" \
-            --notes "Test candidate only. CI passed; real-client interoperability and production load are not yet certified. Existing panel compatibility retained. Install with explicit --version v1.0.0-rc.1. Back up existing binaries and configuration before testing. Do not switch production-wide installer URLs yet."
+            --title "Xboard-Node v1.0.0-rc.2" \
+            --notes "RC2 test candidate: per-node report logs, raw traffic byte totals, bounded OBFS failure diagnostics and tests. REALITY log filtering deferred to avoid introducing extra kernel services. CI passed; real-client interoperability and production load are not yet certified. Existing panel compatibility retained. Install with explicit --version v1.0.0-rc.2. Back up existing binaries and configuration before testing. Do not switch production-wide installer URLs yet."
