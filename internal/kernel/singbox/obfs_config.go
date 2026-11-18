@@ -53,6 +53,9 @@ func prepareHTTPObfsConfig(
 	}
 	udpInbound["tag"] = "shadowsocks-udp-in"
 	udpInbound["network"] = "udp"
+	if nc.ListenIP != "" {
+		udpInbound["listen"] = nc.ListenIP
+	}
 	udpInbound["reuse_addr"] = true
 	kcfgConfig["inbounds"] = append(tcpConfig, udpInbound)
 	return backend, host, nil
