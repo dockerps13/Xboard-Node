@@ -441,6 +441,22 @@ func (c *Client) postJSON(path string, payload map[string]interface{}) error {
 				}
 			}
 		}
+		// A panel must prove it handled our idempotency key, rather than
+		// silently accepting an unknown JSON field with legacy semantics.
+		if requestedID, ok := payload["report_id"].(string); ok && requestedID != "" {
+			var receipt struct {
+				Data struct {
+					ReportID string `json:"report_id"`
+					Accepted bool   `json:"accepted"`
+				} `json:"data"`
+			}
+			if err := json.Unmarshal(raw, &receipt); err != nil {
+				return fmt.Errorf("invalid idempotent report receipt: %w", err)
+			}
+			if receipt.Data.ReportID != requestedID || !receipt.Data.Accepted {
+				return fmt.Errorf("idempotent report receipt mismatch or not accepted")
+			}
+		}
 	}
 	c.apiSuccess.Add(1)
 	return nil
