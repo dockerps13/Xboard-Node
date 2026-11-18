@@ -282,8 +282,18 @@ func (o *Orchestrator) stopAll() {
 // keep panel load predictable while avoiding head-of-line blocking when a
 // single node's REST config endpoint is slow.
 func (o *Orchestrator) startDiscoveredNodes(ctx context.Context, nodes []panel.MachineNode) {
-	const parallelNodes = 4
-	sem := make(chan struct{}, parallelNodes)
+	runBoundedMachineNodes(ctx, nodes, 4, func(n panel.MachineNode) {
+		o.startNode(ctx, n)
+	})
+}
+
+// runBoundedMachineNodes limits concurrent REST operations while allowing
+// deterministic tests of cancellation, completion and concurrency limits.
+func runBoundedMachineNodes(ctx context.Context, nodes []panel.MachineNode, limit int, work func(panel.MachineNode)) {
+	if limit < 1 {
+		limit = 1
+	}
+	sem := make(chan struct{}, limit)
 	var wg sync.WaitGroup
 	for _, node := range nodes {
 		select {
@@ -296,7 +306,7 @@ func (o *Orchestrator) startDiscoveredNodes(ctx context.Context, nodes []panel.M
 		go func(n panel.MachineNode) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			o.startNode(ctx, n)
+			work(n)
 		}(node)
 	}
 	wg.Wait()
