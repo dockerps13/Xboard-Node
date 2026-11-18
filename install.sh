@@ -54,6 +54,9 @@ CURRENT_STATE="fresh"
 TMP_DIR=""
 BACKUP_PATH=""
 SERVICE_EXISTED=0
+BACKUP_READY=0
+MUTATION_STARTED=0
+SERVICE_WAS_ACTIVE=0
 CLEANUP_DONE=0
 
 log_info()  { echo -e "${GREEN}[INFO]${NC} $1"; }
@@ -78,9 +81,9 @@ load_health_port_from_config() {
     fi
     local parsed
     if [ -x "$CLI_PATH" ]; then
-        parsed=$("$CLI_PATH" config health-port --config "$cfg_path" 2>/dev/null)
+        parsed=$("$CLI_PATH" config health-port --config "$cfg_path" 2>/dev/null) || return 1
     else
-        parsed=$(grep -m1 'health_port:' "$cfg_path" 2>/dev/null | sed 's/.*health_port:[[:space:]]*//' | tr -cd '0-9')
+        parsed=$(grep -m1 'health_port:' "$cfg_path" 2>/dev/null | sed 's/.*health_port:[[:space:]]*//' | tr -cd '0-9') || return 1
     fi
     if [ -n "$parsed" ] && [ "$parsed" -ge 0 ] 2>/dev/null; then
         HEALTH_PORT="$parsed"
@@ -94,6 +97,7 @@ load_health_port_from_config() {
 
 rollback_install() {
     log_warn "Rolling back installation"
+    systemctl stop "$SERVICE_NAME" >/dev/null 2>&1 || return 1
     if [ -n "$BACKUP_PATH" ] && [ -d "$BACKUP_PATH" ]; then
         if [ -f "$BACKUP_PATH/xboard-node" ]; then
             install -m 755 "$BACKUP_PATH/xboard-node" "$BINARY_PATH"
@@ -126,11 +130,15 @@ rollback_install() {
             rm -f "$SERVICE_PATH"
         fi
     fi
-    load_health_port_from_config "$CONFIG_FILE"
-    systemctl daemon-reload || true
+    load_health_port_from_config "$CONFIG_FILE" || true
+    systemctl daemon-reload || return 1
     if [ "$SERVICE_EXISTED" -eq 1 ] || [ -f "$SERVICE_PATH" ]; then
         systemctl reset-failed "$SERVICE_NAME" >/dev/null 2>&1 || true
-        systemctl restart "$SERVICE_NAME" >/dev/null 2>&1 || true
+        if [ "$SERVICE_WAS_ACTIVE" -eq 0 ]; then
+            log_warn "Rollback complete; original service was inactive"
+            return 0
+        fi
+        systemctl start "$SERVICE_NAME" >/dev/null 2>&1 || return 1
         if ! wait_for_health; then
             log_error "Rollback completed but restored service did not become healthy"
             show_recent_logs
@@ -147,8 +155,8 @@ on_error() {
     local line_no=${1:-unknown}
     if [ "$exit_code" -ne 0 ]; then
         log_error "Install failed at line ${line_no} (exit=${exit_code})"
-        if [ -n "$BACKUP_PATH" ]; then
-            rollback_install || true
+        if [ "$BACKUP_READY" -eq 1 ] && [ "$MUTATION_STARTED" -eq 1 ]; then
+            rollback_install || log_error "Automatic rollback failed; inspect backup: $BACKUP_PATH"
         fi
     fi
     cleanup_tmp
@@ -489,6 +497,28 @@ resolve_download_url() {
     fi
 }
 
+# Verify remote artifacts before executing them. Explicit local binaries remain
+# operator-supplied inputs; do not pretend they have a release checksum.
+verify_release_artifact() {
+    local artifact="$1" staged="$2" expected actual
+    if [ ! -f "$TMP_DIR/SHA256SUMS" ]; then
+        resolve_download_url "SHA256SUMS"
+        curl -fsSL --connect-timeout 10 --max-time 60 "$DOWNLOAD_URL" -o "$TMP_DIR/SHA256SUMS" || return 1
+    fi
+    expected=$(awk -v name="$artifact" '$2 == name || $2 == "*" name {print $1}' "$TMP_DIR/SHA256SUMS")
+    if ! [[ "$expected" =~ ^[[:xdigit:]]{64}$ ]]; then
+        log_error "Missing or ambiguous SHA256 entry for $artifact"
+        return 1
+    fi
+    actual=$(sha256sum "$staged")
+    actual=${actual%% *}
+    if [ "${actual,,}" != "${expected,,}" ]; then
+        log_error "SHA256 mismatch for $artifact"
+        return 1
+    fi
+    log_info "SHA256 verified: $artifact"
+}
+
 stage_binary() {
     local staged="$TMP_DIR/xboard-node"
     local local_src
@@ -496,6 +526,7 @@ stage_binary() {
     if [ -n "$local_src" ]; then
         log_step "Using local binary: ${local_src}"
         cp "$local_src" "$staged"
+        log_warn "Local binary supplied; release checksum not verified"
     else
         resolve_download_url "xboard-node-linux-${ARCH}"
         log_step "Downloading binary: ${DOWNLOAD_URL}"
@@ -503,6 +534,7 @@ stage_binary() {
             log_error "Failed to download binary from ${DOWNLOAD_URL}"
             exit 1
         fi
+        verify_release_artifact "xboard-node-linux-${ARCH}" "$staged"
     fi
     chmod +x "$staged"
     if ! "$staged" -v >/dev/null 2>&1; then
@@ -528,6 +560,7 @@ stage_xbctl() {
     if [ -n "$local_src" ]; then
         log_step "Using local xbctl binary: ${local_src}"
         cp "$local_src" "$staged"
+        log_warn "Local xbctl supplied; release checksum not verified"
     else
         resolve_download_url "xbctl-linux-${ARCH}"
         log_step "Downloading xbctl: ${DOWNLOAD_URL}"
@@ -535,6 +568,7 @@ stage_xbctl() {
             log_error "Failed to download xbctl from ${DOWNLOAD_URL}"
             exit 1
         fi
+        verify_release_artifact "xbctl-linux-${ARCH}" "$staged"
     fi
     chmod +x "$staged"
     if ! "$staged" version > /dev/null 2>&1; then
@@ -614,8 +648,11 @@ EOF_UNIT
 }
 
 backup_existing_state() {
-    BACKUP_PATH="${BACKUP_DIR}/$(date +%Y%m%d-%H%M%S)"
-    mkdir -p "$BACKUP_PATH"
+    BACKUP_PATH=$(mktemp -d "${BACKUP_DIR}/$(date +%Y%m%d-%H%M%S)-XXXXXX")
+    chmod 700 "$BACKUP_PATH"
+    if systemctl is-active --quiet "$SERVICE_NAME"; then
+        SERVICE_WAS_ACTIVE=1
+    fi
     if [ -x "$BINARY_PATH" ]; then
         cp "$BINARY_PATH" "$BACKUP_PATH/xboard-node"
     fi
@@ -637,11 +674,12 @@ backup_existing_state() {
     else
         SERVICE_EXISTED=0
     fi
+    BACKUP_READY=1
 }
 
 stop_existing_service() {
     if [ -f "$SERVICE_PATH" ] || systemctl is-active "$SERVICE_NAME" >/dev/null 2>&1; then
-        systemctl stop "$SERVICE_NAME" >/dev/null 2>&1 || true
+        systemctl stop "$SERVICE_NAME" >/dev/null 2>&1
     fi
 }
 
@@ -674,7 +712,7 @@ wait_for_health() {
         if ! systemctl is-active "$SERVICE_NAME" >/dev/null 2>&1; then
             return 1
         fi
-        if curl -fsS "http://127.0.0.1:${HEALTH_PORT}/healthz" >/dev/null 2>&1; then
+        if curl -fsS --connect-timeout 1 --max-time 2 "http://127.0.0.1:${HEALTH_PORT}/healthz" >/dev/null 2>&1; then
             return 0
         fi
         sleep 1
@@ -713,6 +751,7 @@ perform_install() {
     render_config
     render_service
     backup_existing_state
+    MUTATION_STARTED=1
     install_staged_files
     start_service
 
@@ -728,23 +767,23 @@ perform_install() {
 
 perform_upgrade() {
     detect_current_state
-    if [ "$CURRENT_STATE" = "fresh" ]; then
-        log_warn "No existing install found; falling back to install"
-        perform_install
-        return
+    if [ "$CURRENT_STATE" != "installed" ]; then
+        log_error "Upgrade requires an existing complete installation; use install to reconcile"
+        return 1
     fi
+    load_health_port_from_config "$CONFIG_FILE"
     TMP_DIR=$(mktemp -d)
     ensure_dirs
     stage_binary
     stage_xbctl
-    render_service
     backup_existing_state
+    MUTATION_STARTED=1
+    stop_existing_service
     install -m 755 "$TMP_DIR/xboard-node" "$BINARY_PATH"
     install -m 755 "$TMP_DIR/xbctl" "$CLI_PATH"
     ln -sf "$CLI_PATH" /usr/bin/xbctl 2>/dev/null || true
-    install -m 644 "$TMP_DIR/${SERVICE_NAME}" "$SERVICE_PATH"
-    systemctl daemon-reload
-    systemctl restart "$SERVICE_NAME"
+    # Preserve the existing unit, environment, credentials and runtime settings.
+    systemctl start "$SERVICE_NAME"
     if ! wait_for_health; then
         log_error "Upgrade health check failed"
         show_recent_logs
