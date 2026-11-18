@@ -1,0 +1,227 @@
+// Package obfs implements the HTTP handshake portion of the SIP003
+// simple-obfs protocol. This code is an independent Go implementation;
+// it does not incorporate the historical GPL-licensed simple-obfs C code.
+package obfs
+
+import (
+	"bufio"
+	"crypto/sha1"
+	"encoding/base64"
+	"errors"
+	"fmt"
+	"io"
+	"net"
+	"strings"
+	"sync"
+	"time"
+)
+
+const (
+	maxHTTPHeaderBytes = 8192
+	headerTimeout      = 8 * time.Second
+	backendTimeout     = 5 * time.Second
+)
+
+// HTTPServer terminates the simple-obfs HTTP preface and relays the remaining
+// encrypted Shadowsocks stream to a loopback-only backend. The backend must
+// support PROXY protocol v1 to retain the real client IP for device limits.
+type HTTPServer struct {
+	mu       sync.RWMutex
+	listener net.Listener
+	backend  string
+	host     string
+	active   map[net.Conn]struct{}
+	wg       sync.WaitGroup
+}
+
+func ListenHTTP(addr, backend, host string) (*HTTPServer, error) {
+	if backend == "" {
+		return nil, errors.New("empty obfs backend")
+	}
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return nil, err
+	}
+	s := &HTTPServer{listener: ln, backend: backend, host: host, active: make(map[net.Conn]struct{})}
+	s.wg.Add(1)
+	go s.serve()
+	return s, nil
+}
+
+func (s *HTTPServer) Addr() net.Addr { return s.listener.Addr() }
+
+// UpdateBackend reroutes only newly accepted connections. Existing sessions
+// stay bound to their original backend while a kernel swap drains.
+func (s *HTTPServer) UpdateBackend(backend, host string) {
+	s.mu.Lock()
+	s.backend, s.host = backend, host
+	s.mu.Unlock()
+}
+
+func (s *HTTPServer) serve() {
+	defer s.wg.Done()
+	for {
+		conn, err := s.listener.Accept()
+		if err != nil {
+			return
+		}
+		s.mu.Lock()
+		if s.active == nil {
+			s.mu.Unlock()
+			conn.Close()
+			return
+		}
+		s.active[conn] = struct{}{}
+		s.backend, s.host = s.backend, s.host
+		s.wg.Add(1)
+		s.mu.Unlock()
+		go s.handle(conn)
+	}
+}
+
+func (s *HTTPServer) handle(conn net.Conn) {
+	defer s.wg.Done()
+	defer conn.Close()
+	defer func() {
+		s.mu.Lock()
+		delete(s.active, conn)
+		s.mu.Unlock()
+	}()
+
+	s.mu.RLock()
+	backendAddr, expectedHost := s.backend, s.host
+	s.mu.RUnlock()
+
+	if err := conn.SetReadDeadline(time.Now().Add(headerTimeout)); err != nil {
+		return
+	}
+	reader := bufio.NewReaderSize(conn, 4096)
+	key, err := readHTTPPreface(reader, expectedHost)
+	if err != nil {
+		return
+	}
+	if err := conn.SetReadDeadline(time.Time{}); err != nil {
+		return
+	}
+	backend, err := net.DialTimeout("tcp", backendAddr, backendTimeout)
+	if err != nil {
+		return
+	}
+	defer backend.Close()
+
+	proxyHeader, err := proxyProtocolLine(conn.RemoteAddr(), conn.LocalAddr())
+	if err != nil {
+		return
+	}
+	if _, err := io.WriteString(backend, proxyHeader); err != nil {
+		return
+	}
+	if _, err := io.WriteString(conn, switchingProtocolsResponse(key)); err != nil {
+		return
+	}
+	var copies sync.WaitGroup
+	copies.Add(2)
+	go func() {
+		defer copies.Done()
+		_, _ = io.Copy(backend, reader)
+		if tcp, ok := backend.(*net.TCPConn); ok {
+			_ = tcp.CloseWrite()
+		}
+	}()
+	go func() {
+		defer copies.Done()
+		_, _ = io.Copy(conn, backend)
+		if tcp, ok := conn.(*net.TCPConn); ok {
+			_ = tcp.CloseWrite()
+		}
+	}()
+	copies.Wait()
+}
+
+func readHTTPPreface(r *bufio.Reader, expectedHost string) (string, error) {
+	total := 0
+	var host, upgrade, connection, key string
+	for lineNum := 0; ; lineNum++ {
+		line, err := r.ReadString('\n')
+		if err != nil {
+			return "", err
+		}
+		total += len(line)
+		if total > maxHTTPHeaderBytes {
+			return "", errors.New("obfs HTTP header too large")
+		}
+		line = strings.TrimRight(line, "\r\n")
+		if lineNum == 0 {
+			fields := strings.Fields(line)
+			if len(fields) != 3 || fields[2] != "HTTP/1.1" ||
+				(fields[0] != "GET" && fields[0] != "POST") {
+				return "", errors.New("invalid obfs HTTP request line")
+			}
+			continue
+		}
+		if line == "" {
+			break
+		}
+		before, after, ok := strings.Cut(line, ":")
+		if !ok {
+			return "", errors.New("malformed HTTP header")
+		}
+		value := strings.TrimSpace(after)
+		switch strings.ToLower(strings.TrimSpace(before)) {
+		case "host":
+			host = value
+		case "upgrade":
+			upgrade = value
+		case "connection":
+			connection = value
+		case "sec-websocket-key":
+			key = value
+		}
+	}
+	if !strings.EqualFold(upgrade, "websocket") || !strings.Contains(strings.ToLower(connection), "upgrade") || key == "" {
+		return "", errors.New("missing WebSocket upgrade headers")
+	}
+	if host == "" {
+		return "", errors.New("missing HTTP host")
+	}
+	if expectedHost != "" && !strings.EqualFold(strings.Split(host, ":")[0], expectedHost) {
+		return "", errors.New("obfs host mismatch")
+	}
+	return key, nil
+}
+
+func switchingProtocolsResponse(key string) string {
+	sum := sha1.Sum([]byte(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"))
+	return "HTTP/1.1 101 Switching Protocols\r\n" +
+		"Server: nginx\r\n" +
+		"Upgrade: websocket\r\n" +
+		"Connection: Upgrade\r\n" +
+		"Sec-WebSocket-Accept: " + base64.StdEncoding.EncodeToString(sum[:]) + "\r\n\r\n"
+}
+
+func proxyProtocolLine(remote, local net.Addr) (string, error) {
+	src, okSrc := remote.(*net.TCPAddr)
+	dst, okDst := local.(*net.TCPAddr)
+	if !okSrc || !okDst {
+		return "", errors.New("non-TCP address for obfs relay")
+	}
+	family := "TCP6"
+	if src.IP.To4() != nil && dst.IP.To4() != nil {
+		family = "TCP4"
+	}
+	return fmt.Sprintf("PROXY %s %s %s %d %d\r\n", family, src.IP, dst.IP, src.Port, dst.Port), nil
+}
+
+func (s *HTTPServer) Close() {
+	_ = s.listener.Close()
+	// Closing all active connections ensures a service stop cannot leak
+	// reverse-proxy goroutines beyond the node lifecycle.
+	s.mu.Lock()
+	active := s.active
+	s.active = nil
+	for conn := range active {
+		_ = conn.Close()
+	}
+	s.mu.Unlock()
+	s.wg.Wait()
+}
