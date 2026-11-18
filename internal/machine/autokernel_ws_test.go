@@ -88,3 +88,21 @@ func TestInvalidWSPushDoesNotAdvanceNodeRevision(t *testing.T) {
 		t.Fatalf("valid update did not advance revision, got %d", handle.revision)
 	}
 }
+
+func TestFailedNodeHandleCleanupPreservesReplacement(t *testing.T) {
+	const nodeID = 51
+	oldDone := make(chan struct{})
+	newDone := make(chan struct{})
+	orchestrator := &Orchestrator{nodes: map[int]*nodeHandle{
+		nodeID: {done: oldDone},
+	}}
+	orchestrator.removeHandleIfCurrent(nodeID, oldDone)
+	if _, found := orchestrator.nodes[nodeID]; found {
+		t.Fatal("failed node must be removed so machine rediscovery can retry")
+	}
+	orchestrator.nodes[nodeID] = &nodeHandle{done: newDone}
+	orchestrator.removeHandleIfCurrent(nodeID, oldDone)
+	if orchestrator.nodes[nodeID] == nil || orchestrator.nodes[nodeID].done != newDone {
+		t.Fatal("old generation cleanup must not delete replacement service")
+	}
+}
