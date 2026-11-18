@@ -43,3 +43,22 @@ func TestReportBatchIDIsOptInAndRawBytesUnchanged(t *testing.T) {
 		}
 	}
 }
+
+func TestIdempotentReportDoesNotAcceptLegacyOrMismatchedReceipt(t *testing.T) {
+	for _, tc := range []struct{ name, body string }{
+		{"legacy_200", `{"data":true}`},
+		{"wrong_id", `{"data":{"report_id":"different","accepted":true}}`},
+		{"rejected", `{"data":{"report_id":"0123456789abcdef0123456789abcdef","accepted":false}}`},
+		{"malformed", `not-json`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer ts.Close()
+			client := NewClient(config.PanelConfig{URL: ts.URL, NodeID: 16, MachineID: 4, Token: "test"})
+			err := client.ReportWithBatchID("0123456789abcdef0123456789abcdef", map[int][2]int64{1: {123, 456}}, nil, nil, 0, [2]uint64{}, [2]uint64{}, [2]uint64{}, nil)
+			if err == nil { t.Fatal("unverified idempotent receipt accepted") }
+		})
+	}
+}
