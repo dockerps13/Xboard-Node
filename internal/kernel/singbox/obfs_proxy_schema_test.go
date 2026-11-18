@@ -14,7 +14,7 @@ import (
 	"github.com/cedar2025/xboard-node/internal/model"
 )
 
-func TestShadowsocksBackendSupportsProxyProtocolWithTCPOnly(t *testing.T) {
+func TestShadowsocksBackendSupportsLoopbackTCPOnly(t *testing.T) {
 	cfg := buildConfig(config.KernelConfig{}, &model.NodeSpec{
 		Protocol: "shadowsocks",
 		ServerPort: 50000,
@@ -24,7 +24,7 @@ func TestShadowsocksBackendSupportsProxyProtocolWithTCPOnly(t *testing.T) {
 	inbound := cfg["inbounds"].([]M)[0]
 	inbound["listen"] = "127.0.0.1"
 	inbound["network"] = "tcp"
-	inbound["proxy_protocol"] = true
+	// The source IP is restored by the local endpoint mapping, not PROXY v1.
 	data, err := json.Marshal(cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -57,8 +57,8 @@ func TestSSHTTPObfsConfigIncludesPublicUDPAndProxyProtocolBackend(t *testing.T) 
 		t.Fatalf("expected split TCP/UDP inbounds, got %d", len(inbounds))
 	}
 	tcp, udp := inbounds[0], inbounds[1]
-	if tcp["listen"] != "127.0.0.1" || tcp["network"] != "tcp" || tcp["proxy_protocol"] != true {
-		t.Fatalf("loopback TCP backend must preserve client IP: %v", tcp)
+	if tcp["listen"] != "127.0.0.1" || tcp["network"] != "tcp" {
+		t.Fatalf("loopback TCP backend must be isolated: %v", tcp)
 	}
 	if udp["network"] != "udp" || udp["listen_port"] != 8080 {
 		t.Fatalf("public UDP SS traffic must remain natively supported: %v", udp)
