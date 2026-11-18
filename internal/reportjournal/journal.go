@@ -86,7 +86,12 @@ func (j *Journal) Append(traffic map[int][2]int64) (Batch, error) {
 	if err := f.Sync(); err != nil { f.Close(); return Batch{}, err }
 	if err := f.Close(); err != nil { return Batch{}, err }
 	if err := os.Rename(tmp, j.path(id)); err != nil { return Batch{}, err }
-	if err := syncDirectory(j.dir); err != nil { return Batch{}, err }
+	// Once rename succeeds, do not signal a zero batch even if directory
+	// fsync fails: the file may already exist. The caller must not restore
+	// those counters into another new batch, which would double-charge.
+	if err := syncDirectory(j.dir); err != nil {
+		return batch, fmt.Errorf("sync persisted batch directory: %w", err)
+	}
 	return batch, nil
 }
 
