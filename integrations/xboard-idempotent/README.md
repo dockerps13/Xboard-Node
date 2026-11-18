@@ -58,10 +58,13 @@ new report_id protocol.
            );
        } catch (\InvalidArgumentException $e) {
            return response()->json(['message' => $e->getMessage()], 422);
-       } catch (\RuntimeException $e) {
-           // Includes an ID reused with altered payload; never fall back
-           // to legacy billing and never return accepted=true.
+       } catch (\DomainException $e) {
+           // An existing report ID cannot be reused with altered bytes.
            return response()->json(['message' => $e->getMessage()], 409);
+       } catch (\Throwable $e) {
+           // A failed DB/queue operation is not a durable receipt.
+           \Illuminate\Support\Facades\Log::error('idempotent report failed', ['error' => $e->getMessage()]);
+           return response()->json(['message' => 'report temporarily unavailable'], 503);
        }
    } elseif (is_array($traffic) && !empty($traffic)) {
        ServerService::processTraffic($node, $traffic);
