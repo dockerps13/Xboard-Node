@@ -409,6 +409,26 @@ func (c *Client) postJSON(path string, payload map[string]interface{}) error {
 		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		return fmt.Errorf("status %d: %s", resp.StatusCode, respBody)
 	}
+	// An HTTP 200 alone is not an accounting receipt. Older XBoard
+	// deployments sometimes return an empty body, so preserve that
+	// compatibility, but never silently accept an explicit false result.
+	if path == "/api/v2/server/report" {
+		raw, err := io.ReadAll(io.LimitReader(resp.Body, 65536))
+		if err != nil {
+			return fmt.Errorf("read report response: %w", err)
+		}
+		var envelope map[string]json.RawMessage
+		if json.Unmarshal(raw, &envelope) == nil {
+			for _, key := range []string{"data", "success"} {
+				if value, ok := envelope[key]; ok {
+					var accepted bool
+					if json.Unmarshal(value, &accepted) == nil && !accepted {
+						return fmt.Errorf("panel explicitly rejected report (%s=false)", key)
+					}
+				}
+			}
+		}
+	}
 	c.apiSuccess.Add(1)
 	return nil
 }
