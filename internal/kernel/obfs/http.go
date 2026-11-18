@@ -118,23 +118,22 @@ func (s *HTTPServer) handle(conn net.Conn) {
 	if _, err := io.WriteString(conn, switchingProtocolsResponse(key)); err != nil {
 		return
 	}
-	var copies sync.WaitGroup
-	copies.Add(2)
+	// Terminate both directions when either side disconnects. Waiting for
+	// two independent Copy loops to finish without closing their peers
+	// could otherwise hang a node shutdown forever.
+	finished := make(chan struct{}, 2)
 	go func() {
-		defer copies.Done()
 		_, _ = io.Copy(backend, reader)
-		if tcp, ok := backend.(*net.TCPConn); ok {
-			_ = tcp.CloseWrite()
-		}
+		finished <- struct{}{}
 	}()
 	go func() {
-		defer copies.Done()
 		_, _ = io.Copy(conn, backend)
-		if tcp, ok := conn.(*net.TCPConn); ok {
-			_ = tcp.CloseWrite()
-		}
+		finished <- struct{}{}
 	}()
-	copies.Wait()
+	<-finished
+	_ = conn.Close()
+	_ = backend.Close()
+	<-finished
 }
 
 func readHTTPPreface(r *bufio.Reader, expectedHost string) (string, error) {
