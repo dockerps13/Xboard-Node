@@ -219,18 +219,22 @@ func (o *Orchestrator) startNode(ctx context.Context, mn panel.MachineNode) {
 		defer o.unregisterNode(mn.ID)
 		// Reap the handle even on unexpected initial setup or runtime exit.
 		// Otherwise rediscovery sees a stale node ID and never retries it.
-		defer func() {
-			o.mu.Lock()
-			if active, ok := o.nodes[mn.ID]; ok && active.done == done {
-				delete(o.nodes, mn.ID)
-			}
-			o.mu.Unlock()
-		}()
+		defer o.removeHandleIfCurrent(mn.ID, done)
 		if err := svc.Run(nodeCtx); err != nil {
 			nlog.Core().Error("machine node exited with error",
 				"node_id", mn.ID, "error", err)
 		}
 	}()
+}
+
+// removeHandleIfCurrent removes only the exact exiting generation. An old
+// service exiting after replacement must not delete the new service handle.
+func (o *Orchestrator) removeHandleIfCurrent(nodeID int, done chan struct{}) {
+	o.mu.Lock()
+	if active, ok := o.nodes[nodeID]; ok && active.done == done {
+		delete(o.nodes, nodeID)
+	}
+	o.mu.Unlock()
 }
 
 func (o *Orchestrator) stopNode(nodeID int) {
