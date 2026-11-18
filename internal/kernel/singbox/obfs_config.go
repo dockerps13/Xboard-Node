@@ -10,9 +10,9 @@ import (
 )
 
 // prepareHTTPObfsConfig builds two SS listeners inside the same sing-box core:
-// a TCP-only loopback listener receiving deobfuscated bytes with PROXY-v1
-// metadata, and a regular public UDP listener for direct Shadowsocks UDP.
-// This preserves real client IP accounting and the usual UDP behavior.
+// a TCP-only loopback listener receiving deobfuscated bytes, and a
+// regular public UDP listener for direct Shadowsocks UDP. The Go frontend
+// records each TCP original IP for device accounting.
 func prepareHTTPObfsConfig(
 	kcfgConfig M,
 	nc *model.NodeSpec,
@@ -42,7 +42,6 @@ func prepareHTTPObfsConfig(
 	tcpInbound["listen"] = "127.0.0.1"
 	tcpInbound["listen_port"] = port
 	tcpInbound["network"] = "tcp"
-	tcpInbound["proxy_protocol"] = true
 
 	udpNode := *nc
 	udpNode.Plugin = ""
