@@ -41,6 +41,24 @@ final class IdempotentServerReportService
         }
         $hash = hash('sha256', $canonical);
 
+        // A replay must not run traffic hooks or capture a new rate. In
+        // particular, a changed plugin configuration must not prevent a
+        // node from obtaining the original durable receipt.
+        $existing = DB::table('v2_server_report_batches')
+            ->where('server_id', (int) $node->id)
+            ->where('server_type', (string) $node->type)
+            ->where('report_id', $reportId)
+            ->first();
+        if ($existing) {
+            if (!hash_equals((string) $existing->payload_hash, $hash)) {
+                throw new DomainException('report_id already used with a different payload');
+            }
+            if ($existing->status === 'pending') {
+                ApplyIdempotentServerReportJob::dispatch((int) $existing->id)->onQueue('traffic_fetch');
+            }
+            return ['report_id' => $reportId, 'accepted' => true];
+        }
+
         // Capture the time-dependent rate when first accepting a report.
         $server = $node->toArray();
         $server['rate'] = $node->getCurrentRate();
@@ -50,6 +68,13 @@ final class IdempotentServerReportService
         $processed = self::normalize($processed);
         if (!$processed) {
             throw new InvalidArgumentException('traffic hooks rejected all users');
+        }
+        if (count($processed) > 20000 || strlen(json_encode($processed, JSON_THROW_ON_ERROR)) > 8 * 1024 * 1024) {
+            throw new InvalidArgumentException('processed traffic exceeds batch limits');
+        }
+        $rate = $server['rate'] ?? null;
+        if (!is_numeric($rate) || !is_finite((float) $rate) || (float) $rate < 0) {
+            throw new InvalidArgumentException('invalid effective traffic rate');
         }
 
         $now = time();
