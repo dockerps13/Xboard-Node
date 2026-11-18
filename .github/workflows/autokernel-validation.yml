@@ -26,7 +26,7 @@ jobs:
       - name: Check formatting
         run: |
           files=$(gofmt -l internal/model/kernel_selector.go internal/model/kernel_selector_test.go internal/machine/machine.go)
-          if [ -n "$files" ]; then echo "$files"; exit 1; fi
+          if [ -n "$files" ]; then echo "$files"; gofmt -d internal/model/kernel_selector.go internal/model/kernel_selector_test.go internal/machine/machine.go; exit 1; fi
       - name: Selector unit tests
         run: go test ./internal/model -run TestResolveKernelForNode -count=1
       - name: Complete test suite
