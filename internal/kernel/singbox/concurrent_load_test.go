@@ -8,8 +8,17 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"strings"
 	"os"
+	"strings"
+	"encoding/json"
+
+	box "github.com/sagernet/sing-box"
+	"github.com/sagernet/sing-box/adapter"
+	"github.com/sagernet/sing-box/include"
+	"github.com/sagernet/sing-box/option"
+	Mdata "github.com/sagernet/sing/common/metadata"
+	singJSON "github.com/sagernet/sing/common/json"
+	"github.com/sagernet/sing/service"
 	"runtime"
 	"strconv"
 	"sync"
@@ -22,6 +31,15 @@ import (
 )
 
 func TestMixedProtocolConcurrentLoad(t *testing.T) {
+	testConcurrentLoad(t, []string{"http", "socks"})
+}
+
+func TestEncryptedProtocolConcurrentLoad(t *testing.T) {
+	testConcurrentLoad(t, []string{"shadowsocks", "vless"})
+}
+
+func testConcurrentLoad(t *testing.T, protocols []string) {
+	t.Helper()
 	count := 100
 	if value := os.Getenv("XBOARD_TEST_CONNECTIONS"); value != "" {
 		n, err := strconv.Atoi(value)
@@ -51,17 +69,47 @@ func TestMixedProtocolConcurrentLoad(t *testing.T) {
 
 	servers := make([]*SingBox, 2)
 	ports := make([]int, 2)
-	for i, protocol := range []string{"http", "socks"} {
+	for i, protocol := range protocols {
 		reservation, err := net.Listen("tcp", "127.0.0.1:0")
 		if err != nil { t.Fatal(err) }
 		ports[i] = reservation.Addr().(*net.TCPAddr).Port
 		reservation.Close()
 		server := New(config.KernelConfig{Type: "singbox", LogLevel: "error", ConfigDir: t.TempDir(),
 			CustomRoute: []map[string]any{{"ip_cidr": []string{"127.0.0.1/32"}, "outbound": "direct"}}})
-		if err := server.Start(&model.NodeSpec{Protocol: protocol, ServerPort: ports[i], ListenIP: "127.0.0.1"},
+		if err := server.Start(&model.NodeSpec{Protocol: protocol, ServerPort: ports[i], ListenIP: "127.0.0.1", Cipher: "aes-128-gcm"},
 			[]model.UserSpec{{ID: 1, UUID: uuid}}, kernel.TLSCert{}); err != nil { t.Fatal(err) }
 		servers[i] = server
 		defer server.Stop()
+	}
+	// Shared embedded client instances, one for each encrypted protocol.
+	// All destinations remain confined to the local echo server.
+	outbounds := make([]adapter.Outbound, len(protocols))
+	for i, protocol := range protocols {
+		if protocol != "shadowsocks" && protocol != "vless" {
+			continue
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		ctx = include.Context(ctx)
+		out := M{"type": protocol, "tag": "load-client", "server": "127.0.0.1", "server_port": ports[i]}
+		if protocol == "shadowsocks" {
+			out["method"], out["password"] = "aes-128-gcm", uuid
+		} else {
+			out["uuid"] = uuid
+		}
+		raw, err := json.Marshal(M{"log": M{"level": "error"}, "outbounds": []M{out}, "route": M{"final": "load-client"}})
+		if err != nil { t.Fatal(err) }
+		opts, err := singJSON.UnmarshalExtendedContext[option.Options](ctx, raw)
+		if err != nil { t.Fatal(err) }
+		client, err := box.New(box.Options{Context: ctx, Options: opts})
+		if err != nil { t.Fatal(err) }
+		defer client.Close()
+		if err := client.Start(); err != nil { t.Fatal(err) }
+		manager := service.FromContext[adapter.OutboundManager](ctx)
+		if manager == nil { t.Fatal("missing outbound manager") }
+		outbound, ok := manager.Outbound("load-client")
+		if !ok { t.Fatal("missing load outbound") }
+		outbounds[i] = outbound
 	}
 	var baseline, peak, after runtime.MemStats
 	runtime.GC()
@@ -79,7 +127,12 @@ func TestMixedProtocolConcurrentLoad(t *testing.T) {
 			defer wg.Done()
 			transport := &http.Transport{DisableKeepAlives: true}
 			defer transport.CloseIdleConnections()
-			if i%2 == 0 {
+			if outbound := outbounds[i%2]; outbound != nil {
+				transport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+					if addr != target.Listener.Addr().String() { return nil, fmt.Errorf("unexpected destination: %s", addr) }
+					return outbound.DialContext(ctx, network, Mdata.ParseSocksaddr(addr))
+				}
+			} else if i%2 == 0 {
 				transport.Proxy = func(*http.Request) (*url.URL, error) {
 					return url.Parse(fmt.Sprintf("http://%s:%s@127.0.0.1:%d", uuid, uuid, ports[0]))
 				}
