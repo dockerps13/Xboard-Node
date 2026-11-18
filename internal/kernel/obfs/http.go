@@ -8,7 +8,6 @@ import (
 	"crypto/sha1"
 	"encoding/base64"
 	"errors"
-	"fmt"
 	"io"
 	"net"
 	"strings"
@@ -23,8 +22,8 @@ const (
 )
 
 // HTTPServer terminates the simple-obfs HTTP preface and relays the remaining
-// encrypted Shadowsocks stream to a loopback-only backend. The backend must
-// support PROXY protocol v1 to retain the real client IP for device limits.
+// encrypted Shadowsocks stream to a loopback-only backend. Real client IPs
+// are tracked by the local source-port mapping in origin.go.
 type HTTPServer struct {
 	mu       sync.RWMutex
 	listener net.Listener
@@ -108,13 +107,9 @@ func (s *HTTPServer) handle(conn net.Conn) {
 	}
 	defer backend.Close()
 
-	proxyHeader, err := proxyProtocolLine(conn.RemoteAddr(), conn.LocalAddr())
-	if err != nil {
-		return
-	}
-	if _, err := io.WriteString(backend, proxyHeader); err != nil {
-		return
-	}
+	backendLocal := backend.LocalAddr()
+	registerOrigin(backendLocal, conn.RemoteAddr())
+	defer unregisterOrigin(backendLocal)
 	if _, err := io.WriteString(conn, switchingProtocolsResponse(key)); err != nil {
 		return
 	}
@@ -195,19 +190,6 @@ func switchingProtocolsResponse(key string) string {
 		"Upgrade: websocket\r\n" +
 		"Connection: Upgrade\r\n" +
 		"Sec-WebSocket-Accept: " + base64.StdEncoding.EncodeToString(sum[:]) + "\r\n\r\n"
-}
-
-func proxyProtocolLine(remote, local net.Addr) (string, error) {
-	src, okSrc := remote.(*net.TCPAddr)
-	dst, okDst := local.(*net.TCPAddr)
-	if !okSrc || !okDst {
-		return "", errors.New("non-TCP address for obfs relay")
-	}
-	family := "TCP6"
-	if src.IP.To4() != nil && dst.IP.To4() != nil {
-		family = "TCP4"
-	}
-	return fmt.Sprintf("PROXY %s %s %s %d %d\r\n", family, src.IP, dst.IP, src.Port, dst.Port), nil
 }
 
 // StopAccepting closes only the public listening socket. Existing sessions
