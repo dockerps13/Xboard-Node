@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
+	"strconv"
 	"sync"
 	"time"
 
@@ -20,6 +22,7 @@ import (
 
 	"github.com/cedar2025/xboard-node/internal/config"
 	"github.com/cedar2025/xboard-node/internal/kernel"
+	"github.com/cedar2025/xboard-node/internal/kernel/obfs"
 	"github.com/cedar2025/xboard-node/internal/model"
 	"github.com/cedar2025/xboard-node/internal/nlog"
 )
@@ -53,6 +56,8 @@ type SingBox struct {
 	// This avoids resetting externally observed cumulative counters.
 	retiredTrackers []*ConnTracker
 	archivedTraffic map[int][2]int64
+	obfsHTTP        *obfs.HTTPServer
+	obfsPublicPort  int
 
 	// speedLimitFunc resolves a user UUID to a *rate.Limiter.
 	// Set once by SetSpeedLimitFunc and forwarded to every new ConnTracker.
@@ -97,7 +102,22 @@ func (s *SingBox) Start(nodeConfig *model.NodeSpec, users []model.UserSpec, tls 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	cfgMap := buildConfig(s.cfg, nodeConfig, users, tls)
+	buildNode := nodeConfig
+	if nodeConfig.Protocol == "shadowsocks" && nodeConfig.Plugin != "" {
+		copyNode := *nodeConfig
+		copyNode.Plugin = ""
+		copyNode.PluginOpt = ""
+		buildNode = &copyNode
+	}
+	cfgMap := buildConfig(s.cfg, buildNode, users, tls)
+	obfsBackend, obfsHost := "", ""
+	if nodeConfig.Protocol == "shadowsocks" && nodeConfig.Plugin != "" {
+		var err error
+		obfsBackend, obfsHost, err = prepareHTTPObfsConfig(cfgMap, nodeConfig, users, tls)
+		if err != nil {
+			return err
+		}
+	}
 	data, err := json.Marshal(cfgMap)
 	if err != nil {
 		return fmt.Errorf("marshal config: %w", err)
@@ -119,6 +139,7 @@ func (s *SingBox) Start(nodeConfig *model.NodeSpec, users []model.UserSpec, tls 
 	oldCancel := s.cancel
 	oldCtx := s.ctx
 	oldTracker := s.connTracker
+	oldObfsHTTP := s.obfsHTTP
 
 	instance, err := box.New(box.Options{
 		Context: ctx,
@@ -135,6 +156,28 @@ func (s *SingBox) Start(nodeConfig *model.NodeSpec, users []model.UserSpec, tls 
 		return fmt.Errorf("start sing-box: %w", err)
 	}
 
+	// Attach or reuse the public HTTP obfs listener only after the new SS
+	// backend starts. Reuse avoids rebinding the same TCP port on reload.
+	var front *obfs.HTTPServer
+	if obfsBackend != "" {
+		if oldObfsHTTP != nil && s.obfsPublicPort == nodeConfig.ServerPort {
+			front = oldObfsHTTP
+			front.UpdateBackend(obfsBackend, obfsHost)
+		} else {
+			host := nodeConfig.ListenIP
+			if host == "" {
+				host = "::"
+			}
+			publicAddr := net.JoinHostPort(host, strconv.Itoa(nodeConfig.ServerPort))
+			var listenErr error
+			front, listenErr = obfs.ListenHTTP(publicAddr, obfsBackend, obfsHost)
+			if listenErr != nil {
+				instance.Close()
+				cancel()
+				return fmt.Errorf("start HTTP simple-obfs on %s: %w", publicAddr, listenErr)
+			}
+		}
+	}
 	// New instance started successfully — swap state.
 	s.box = instance
 	s.ctx = ctx
@@ -142,6 +185,12 @@ func (s *SingBox) Start(nodeConfig *model.NodeSpec, users []model.UserSpec, tls 
 	s.users = users
 	s.nodeConfig = nodeConfig
 	s.tls = tls
+	s.obfsHTTP = front
+	if front != nil {
+		s.obfsPublicPort = nodeConfig.ServerPort
+	} else {
+		s.obfsPublicPort = 0
+	}
 
 	// Keep the old tracker visible for traffic reporting until its
 	// connections have drained and the final bytes are archived.
@@ -161,11 +210,20 @@ func (s *SingBox) Start(nodeConfig *model.NodeSpec, users []model.UserSpec, tls 
 	s.trackerRegistered = false
 	s.registerTracker(ctx)
 
-	// Recycle old instance in background — drain then close.
+	// Recycle old instance in background — drain then close. Old obfs
+	// sessions remain on their old encrypted backend until drained.
+	if oldObfsHTTP != nil && oldObfsHTTP != front {
+		oldObfsHTTP.StopAccepting()
+	}
 	if oldBox != nil {
 		go recycleOldBox(oldBox, oldCancel, oldCtx, oldTracker, func() {
 			s.archiveRetiredTracker(oldTracker)
+			if oldObfsHTTP != nil && oldObfsHTTP != front {
+				oldObfsHTTP.Close()
+			}
 		})
+	} else if oldObfsHTTP != nil && oldObfsHTTP != front {
+		oldObfsHTTP.Close()
 	}
 
 	nlog.Core().Debug("sing-box started", "users", len(users))
@@ -235,6 +293,14 @@ func (s *SingBox) archiveRetiredTracker(ct *ConnTracker) {
 // Routes, outbounds, and the connTracker stay alive so in-flight connections
 // continue to be tracked correctly.
 func (s *SingBox) Reload(nodeConfig *model.NodeSpec, users []model.UserSpec, tls kernel.TLSCert) error {
+	// The obfs TCP public listener and the backend TCP/UDP split require
+	// a full transactional kernel replacement, not a single-inbound reload.
+	s.mu.RLock()
+	hasObfs := s.obfsHTTP != nil
+	s.mu.RUnlock()
+	if hasObfs || (nodeConfig.Protocol == "shadowsocks" && nodeConfig.Plugin != "") {
+		return s.Start(nodeConfig, users, tls)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -376,7 +442,15 @@ func (s *SingBox) registerTracker(ctx context.Context) {
 func (s *SingBox) Stop() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.obfsHTTP != nil {
+		s.obfsHTTP.StopAccepting()
+	}
 	s.stop()
+	if s.obfsHTTP != nil {
+		s.obfsHTTP.Close()
+		s.obfsHTTP = nil
+		s.obfsPublicPort = 0
+	}
 }
 
 func (s *SingBox) stop() {
