@@ -23,10 +23,10 @@ type nodeHandle struct {
 	cancel     context.CancelFunc
 	done       chan struct{}
 	mailbox    *controlplane.NodeMailbox
-	kernelType string
+	kernelType   string
 	obfsEnabled bool
-	revision   int64
-	node       panel.MachineNode
+	revision     int64
+	node         panel.MachineNode
 }
 
 // Orchestrator manages all nodes bound to a panel machine. It:
