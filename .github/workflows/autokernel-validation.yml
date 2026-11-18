@@ -31,6 +31,10 @@ jobs:
         run: go test ./internal/model -run TestResolveKernelForNode -count=1
       - name: Complete test suite
         run: go test ./...
+      - name: Static analysis
+        run: go vet ./...
+      - name: Race-sensitive kernel and control-plane tests
+        run: go test -race ./internal/model ./internal/machine ./internal/controlplane ./internal/tracker ./internal/kernel/singbox
       - name: Compile binaries
         run: |
           go build -o /tmp/xboard-node-autokernel ./cmd/xboard-node
