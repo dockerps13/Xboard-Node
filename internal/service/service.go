@@ -1087,9 +1087,16 @@ func (s *Service) pushReportAsync() {
 	go func() {
 		defer s.pushWG.Done()
 		defer s.pushActive.Store(false)
-		if err := s.sink.Report(controlplane.ReportPayload{Traffic: traffic, Alive: aliveIPs, Online: online, CPU: status.CPU, Mem: [2]uint64{status.MemTotal, status.MemUsed}, Swap: [2]uint64{status.SwapTotal, status.SwapUsed}, Disk: [2]uint64{status.DiskTotal, status.DiskUsed}, Metrics: metrics}); err != nil {
+		payload := controlplane.ReportPayload{Traffic: traffic, Alive: aliveIPs, Online: online, CPU: status.CPU, Mem: [2]uint64{status.MemTotal, status.MemUsed}, Swap: [2]uint64{status.SwapTotal, status.SwapUsed}, Disk: [2]uint64{status.DiskTotal, status.DiskUsed}, Metrics: metrics}
+		var err error
+		if s.reportJournal != nil {
+			err = s.reportWithJournal(payload)
+		} else {
+			err = s.sink.Report(payload)
+		}
+		if err != nil {
 			nlog.Core().Warn("failed to push report", "error", err)
-			if len(traffic) > 0 {
+			if s.reportJournal == nil && len(traffic) > 0 {
 				s.tracker.RestoreTraffic(traffic)
 			}
 			if len(aliveIPs) > 0 {
@@ -1139,7 +1146,16 @@ func (s *Service) pushReportSync() {
 	metrics := s.buildMetrics(status)
 	metrics["kernel_status"] = s.kernel.IsRunning()
 
-	if err := s.sink.Report(controlplane.ReportPayload{Traffic: traffic, Alive: aliveIPs, Online: online, CPU: status.CPU, Mem: [2]uint64{status.MemTotal, status.MemUsed}, Swap: [2]uint64{status.SwapTotal, status.SwapUsed}, Disk: [2]uint64{status.DiskTotal, status.DiskUsed}, Metrics: metrics}); err != nil {
+	payload := controlplane.ReportPayload{Traffic: traffic, Alive: aliveIPs, Online: online, CPU: status.CPU, Mem: [2]uint64{status.MemTotal, status.MemUsed}, Swap: [2]uint64{status.SwapTotal, status.SwapUsed}, Disk: [2]uint64{status.DiskTotal, status.DiskUsed}, Metrics: metrics}
+	if s.reportJournal != nil {
+		// A failed send remains safely on disk under the same ID; retry after
+		// restart is permitted only because the panel opted into deduplication.
+		if err := s.reportWithJournal(payload); err != nil {
+			nlog.Core().Warn("failed to push idempotent final report; pending batch retained on disk", "error", err)
+		}
+		return
+	}
+	if err := s.sink.Report(payload); err != nil {
 		nlog.Core().Warn("failed to push final report; retaining unpaid counters in memory", "error", err)
 		// Preserve an on-disk audit copy before this process exits. The
 		// legacy panel may already have charged these bytes despite the HTTP
