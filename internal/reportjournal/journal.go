@@ -33,7 +33,58 @@ func Open(dir string) (*Journal, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("create journal: %w", err)
 	}
-	return &Journal{dir: dir}, nil
+	j := &Journal{dir: dir}
+	if err := j.recoverIncompleteRenames(); err != nil {
+		return nil, fmt.Errorf("recover journal: %w", err)
+	}
+	return j, nil
+}
+
+// recoverIncompleteRenames salvages complete temporary files left by a
+// crash between fsync and rename. A partial temp blocks initialization
+// instead of silently discarding potentially unbilled traffic.
+func (j *Journal) recoverIncompleteRenames() error {
+	entries, err := os.ReadDir(j.dir)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasPrefix(entry.Name(), ".pending-") {
+			continue
+		}
+		src := filepath.Join(j.dir, entry.Name())
+		raw, err := os.ReadFile(src)
+		if err != nil {
+			return err
+		}
+		var batch Batch
+		if err := json.Unmarshal(raw, &batch); err != nil {
+			return fmt.Errorf("incomplete journal temp %q requires manual recovery: %w", entry.Name(), err)
+		}
+		if !validID(batch.ID) {
+			return fmt.Errorf("invalid batch ID in incomplete journal temp %q", entry.Name())
+		}
+		if _, err := copyTraffic(batch.Traffic); err != nil {
+			return fmt.Errorf("invalid counters in journal temp %q: %w", entry.Name(), err)
+		}
+		dst := j.path(batch.ID)
+		if previous, err := os.ReadFile(dst); err == nil {
+			if string(previous) != string(raw) {
+				return fmt.Errorf("different payload exists for batch %s", batch.ID)
+			}
+			if err := os.Remove(src); err != nil {
+				return err
+			}
+		} else if !os.IsNotExist(err) {
+			return err
+		} else if err := os.Rename(src, dst); err != nil {
+			return err
+		}
+		if err := syncDirectory(j.dir); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func newID() (string, error) {
