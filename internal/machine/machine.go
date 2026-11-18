@@ -24,6 +24,7 @@ type nodeHandle struct {
 	done       chan struct{}
 	mailbox    *controlplane.NodeMailbox
 	kernelType string
+	obfsEnabled bool
 	revision   int64
 	node       panel.MachineNode
 }
@@ -184,6 +185,7 @@ func (o *Orchestrator) startNode(ctx context.Context, mn panel.MachineNode) {
 		h.kernelType = nodeCfg.Kernel.Type
 		if initialSnapshot != nil {
 			h.revision = initialSnapshot.RuntimeRevision
+			h.obfsEnabled = initialSnapshot.Plugin != ""
 		}
 	}
 	o.mu.Unlock()
@@ -387,10 +389,12 @@ func (o *Orchestrator) onWSEvent(event panel.WSEvent) {
 	h, exists := o.nodes[nodeID]
 	currentKernel := ""
 	var currentRevision int64
+	var currentObfsEnabled bool
 	var attachedNode panel.MachineNode
 	if exists {
 		currentKernel = h.kernelType
 		currentRevision = h.revision
+		currentObfsEnabled = h.obfsEnabled
 		attachedNode = h.node
 	}
 	o.mu.Unlock()
@@ -409,15 +413,19 @@ func (o *Orchestrator) onWSEvent(event panel.WSEvent) {
 				"node_id", nodeID, "error", selectErr)
 			return
 		}
-		if desiredKernel != currentKernel {
-			nlog.Core().Info(fmt.Sprintf("machine: node %d requires kernel change (%s→%s), scheduling safe restart",
-				nodeID, currentKernel, desiredKernel))
+		// The same public TCP port cannot safely be shared between native
+		// simple-obfs and a plain Shadowsocks inbound while switching
+		// plugin state. Restart the node after accounting its last bytes.
+		newObfsEnabled := event.Config.Plugin != ""
+		if desiredKernel != currentKernel || newObfsEnabled != currentObfsEnabled {
+			nlog.Core().Info(fmt.Sprintf("machine: node %d requires kernel/obfs change (%s→%s, obfs=%t→%t), scheduling safe restart",
+				nodeID, currentKernel, desiredKernel, currentObfsEnabled, newObfsEnabled))
 			go func() {
 				o.lifecycleMu.Lock()
 				defer o.lifecycleMu.Unlock()
 				o.mu.Lock()
 				active, ok := o.nodes[nodeID]
-				needsRestart := ok && active.kernelType != desiredKernel
+				needsRestart := ok && (active.kernelType != desiredKernel || active.obfsEnabled != newObfsEnabled)
 				o.mu.Unlock()
 				if needsRestart {
 					// Wait for the old service to flush traffic before port reuse.
