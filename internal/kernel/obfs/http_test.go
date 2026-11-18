@@ -26,15 +26,17 @@ func TestSimpleObfsHTTPProxyRoundTrip(t *testing.T) {
 		defer conn.Close()
 		_ = conn.SetDeadline(time.Now().Add(3 * time.Second))
 		reader := bufio.NewReader(conn)
+		payload := make([]byte, 5)
+		if _, err := io.ReadFull(reader, payload); err != nil {
+			answer <- err.Error()
+			return
+		}
+		// The frontend installs the mapping before transmitting the first
+		// encrypted payload to the backend, not at TCP Accept time.
 		origin := conn.RemoteAddr().(*net.TCPAddr)
 		originalIP, ok := ResolveOrigin(origin.IP.String(), uint16(origin.Port))
 		if !ok || originalIP != "127.0.0.1" {
 			answer <- fmt.Sprintf("missing original client mapping for %v: %q", origin, originalIP)
-			return
-		}
-		payload := make([]byte, 5)
-		if _, err := io.ReadFull(reader, payload); err != nil {
-			answer <- err.Error()
 			return
 		}
 		if string(payload) != "hello" {
