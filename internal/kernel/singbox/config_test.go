@@ -902,3 +902,17 @@ func TestBuildInbound_Hysteria2Alias(t *testing.T) {
 		t.Fatalf("unexpected hysteria2 users: %v", inbound["users"])
 	}
 }
+
+func TestBuildInboundMieruDefaultsToTCP(t *testing.T) {
+	for _, tc := range []struct{ name, provided, want string }{
+		{"omitted", "", "TCP"},
+		{"lowercase", "udp", "UDP"},
+		{"padded", " tcp ", "TCP"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			n := model.NodeSpec{Protocol: "mieru", ServerPort: 10080, Transport: tc.provided}
+			got := buildInbound(&n, testUsers, kernel.TLSCert{})
+			assertMapValue(t, got, "transport", tc.want)
+		})
+	}
+}
