@@ -63,6 +63,7 @@ type Service struct {
 
 	// pushActive prevents overlapping push/pull goroutines.
 	pushActive atomic.Bool
+	pushWG     sync.WaitGroup // ensure asynchronous reports finish before final shutdown flush
 	pullActive atomic.Bool
 	// pullResults delivers async pullViaAPI results back to the main goroutine.
 	pullResults chan pullResult
@@ -207,6 +208,14 @@ func (s *Service) Run(ctx context.Context) error {
 	for {
 		select {
 		case <-ctx.Done():
+			// Capture the final bytes even when cancellation arrives between
+			// periodic tracking ticks. The kernel is still running here.
+			finalCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			s.trackAndEnforce(finalCtx)
+			cancel()
+			// Wait for an in-flight report to finish restoring failed deltas
+			// before draining the final buffer, preventing lost accounting.
+			s.pushWG.Wait()
 			s.pushReportSync()
 			return nil
 
@@ -1002,7 +1011,9 @@ func (s *Service) pushReportAsync() {
 	metrics := s.buildMetrics(status)
 	metrics["kernel_status"] = s.kernel.IsRunning()
 
+	s.pushWG.Add(1)
 	go func() {
+		defer s.pushWG.Done()
 		defer s.pushActive.Store(false)
 		if err := s.sink.Report(controlplane.ReportPayload{Traffic: traffic, Alive: aliveIPs, Online: online, CPU: status.CPU, Mem: [2]uint64{status.MemTotal, status.MemUsed}, Swap: [2]uint64{status.SwapTotal, status.SwapUsed}, Disk: [2]uint64{status.DiskTotal, status.DiskUsed}, Metrics: metrics}); err != nil {
 			nlog.Core().Warn("failed to push report", "error", err)
