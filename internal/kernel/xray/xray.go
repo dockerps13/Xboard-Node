@@ -154,7 +154,12 @@ func (x *Xray) Start(nodeConfig *model.NodeSpec, users []model.UserSpec, tls ker
 	x.tls = tls
 	x.protocol = nodeConfig.Protocol
 	x.inboundTag = nodeConfig.Protocol + "-in"
-	x.cumTraffic = make(map[int][2]int64)
+	// Preserve cumulative counters across full instance replacements.
+	// XBoard receives deltas from these values: resetting the map would
+	// make a successful restart look like a counter reset and risk double billing.
+	if x.cumTraffic == nil {
+		x.cumTraffic = make(map[int][2]int64)
+	}
 	x.lastKernelHash = kernel.ComputeHash(nodeConfig, users)
 	x.running.Store(true)
 	x.mu.Unlock()
