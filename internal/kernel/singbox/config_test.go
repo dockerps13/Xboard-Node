@@ -922,3 +922,10 @@ func TestBuildInbound_RespectsPanelListenIP(t *testing.T) {
 	inbound := buildInbound(nc, testUsers, kernel.TLSCert{})
 	assertMapValue(t, inbound, "listen", "127.0.0.1")
 }
+
+func TestBuildInbound_NaiveUsesRaceFreeTCPByDefault(t *testing.T) {
+	nc := testNodeSpec(&panel.NodeConfig{Protocol: "naive", ServerPort: 8443, TLS: 1})
+	inbound := buildInbound(nc, testUsers, kernel.TLSCert{})
+	assertMapValue(t, inbound, "type", "naive")
+	assertMapValue(t, inbound, "network", "tcp")
+}
