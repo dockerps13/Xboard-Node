@@ -199,7 +199,7 @@ func (s *SingBox) Start(nodeConfig *model.NodeSpec, users []model.UserSpec, tls 
 	}
 	// Fresh tracker on full restart.
 	s.connTracker = NewConnTracker(0)
-	s.connTracker.SetUserMap(buildUserMap(users))
+	setTrackerUsers(s.connTracker, nodeConfig, users)
 	if s.speedLimitFunc != nil {
 		s.connTracker.SetSpeedLimitFunc(s.speedLimitFunc)
 	}
@@ -412,7 +412,7 @@ func (s *SingBox) Reload(nodeConfig *model.NodeSpec, users []model.UserSpec, tls
 	// Trackers remain registered on the Router (which survives ReloadUsers).
 	// Only update the user map — do NOT re-register or traffic is double-counted.
 	if s.connTracker != nil {
-		s.connTracker.SetUserMap(buildUserMap(users))
+		setTrackerUsers(s.connTracker, nodeConfig, users)
 	}
 
 	nlog.Core().Debug("sing-box reloaded", "users", len(users))
@@ -622,7 +622,7 @@ func (s *SingBox) UpdateUsers(users []model.UserSpec) (added, removed int, err e
 	if added == 0 && removed == 0 {
 		// Only limits may have changed — update tracker map.
 		if s.connTracker != nil {
-			s.connTracker.SetUserMap(buildUserMap(users))
+			setTrackerUsers(s.connTracker, s.nodeConfig, users)
 		}
 		s.users = users
 		return 0, 0, nil
@@ -722,7 +722,7 @@ func (s *SingBox) reloadInboundsLocked(users []model.UserSpec) error {
 	}
 
 	if s.connTracker != nil {
-		s.connTracker.SetUserMap(buildUserMap(users))
+		setTrackerUsers(s.connTracker, s.nodeConfig, users)
 	}
 
 	nlog.Core().Debug("sing-box users hot-swapped", "users", len(users))
@@ -790,12 +790,24 @@ func (s *SingBox) CloseUserConnections(_ context.Context, uuid string) error {
 }
 
 // buildUserMap creates a UUID→userID mapping used by ConnTracker to attribute
-// connections to the correct user. All sing-box protocols use the user's UUID
-// as the inbound name/username, so this covers every protocol.
+// connections to the correct user. Naive numeric usernames are normalized separately.
 func buildUserMap(users []model.UserSpec) map[string]int {
 	m := make(map[string]int, len(users))
 	for _, u := range users {
 		m[u.UUID] = u.ID
 	}
 	return m
+}
+
+// setTrackerUsers preserves Naive's numeric login while using canonical UUIDs
+// for accounting and limit callbacks. Aliases are scoped to this inbound.
+func setTrackerUsers(tracker *ConnTracker, node *model.NodeSpec, users []model.UserSpec) {
+	var aliases map[string]string
+	if node != nil && node.Protocol == "naive" {
+		aliases = make(map[string]string, len(users))
+		for _, user := range users {
+			aliases[strconv.Itoa(user.ID)] = user.UUID
+		}
+	}
+	tracker.setUserIdentities(buildUserMap(users), aliases)
 }
