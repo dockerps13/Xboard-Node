@@ -72,6 +72,7 @@ func (p *MachinePanelControlPlane) Initial(
 	if hs != nil {
 		bootstrap.PushInterval = hs.Settings.PushInterval
 		bootstrap.PullInterval = hs.Settings.PullInterval
+		bootstrap.IdempotentReports = hs.Settings.IdempotentReports
 	}
 
 	configSnapshot := p.initialConfig
