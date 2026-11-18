@@ -32,6 +32,10 @@ jobs:
           php -v
           find integrations/xboard-idempotent -name '*.php' -print0 |
             xargs -0 -n 1 php -l
+      - name: Installer safety tests
+        run: |
+          bash -n install.sh
+          bash tests/installer-safety.sh
       - name: Selector unit tests
         run: go test ./internal/model -run TestResolveKernelForNode -count=1
       - name: Complete test suite
