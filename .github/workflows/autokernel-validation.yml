@@ -58,3 +58,36 @@ jobs:
           path: dist/
           if-no-files-found: error
           retention-days: 30
+
+  publish-rc:
+    name: Publish v1.0.0-rc.1 (test only)
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/feature/autokernel-stage1'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: autokernel-rc-1-publication
+      cancel-in-progress: false
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: autokernel-release-candidate
+          path: dist
+      - name: Verify assets
+        run: |
+          cd dist
+          sha256sum -c SHA256SUMS
+      - name: Publish immutable candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          if gh release view v1.0.0-rc.1 >/dev/null 2>&1; then
+            echo "RC already exists; refusing to overwrite assets."
+            exit 0
+          fi
+          gh release create v1.0.0-rc.1 dist/* \
+            --target "$GITHUB_SHA" --prerelease --latest=false \
+            --title "Xboard-Node v1.0.0-rc.1" \
+            --notes "Test candidate only. CI passed; real-client interoperability and production load are not yet certified. Existing panel compatibility retained. Install with explicit --version v1.0.0-rc.1. Back up existing binaries and configuration before testing. Do not switch production-wide installer URLs yet."
