@@ -1065,6 +1065,32 @@ func (s *Service) reportWithJournal(payload controlplane.ReportPayload) error {
 	return nil
 }
 
+// reportLogger uses the applied runtime rather than a pending config and
+// returns immutable context safe to use from the report goroutine.
+func (s *Service) reportLogger() (*nlog.NodeLog, int, int) {
+	nodeID, machineID := 0, 0
+	if s.cfg != nil {
+		nodeID, machineID = s.cfg.Panel.NodeID, s.cfg.Panel.MachineID
+	}
+	if applied := s.appliedConfig(); applied != nil {
+		return nlog.ForNode(applied.Protocol, applied.ServerPort), nodeID, machineID
+	}
+	return nlog.Core(), nodeID, machineID
+}
+
+// reportTrafficTotals summarizes raw bytes without changing billing payloads.
+func reportTrafficTotals(traffic map[int][2]int64) (up, down uint64) {
+	for _, delta := range traffic {
+		if delta[0] > 0 {
+			up += uint64(delta[0])
+		}
+		if delta[1] > 0 {
+			down += uint64(delta[1])
+		}
+	}
+	return
+}
+
 // pushReportAsync sends the report in a background goroutine so the select
 // loop is never blocked by slow HTTP. Only one push runs at a time.
 func (s *Service) pushReportAsync() {
@@ -1088,6 +1114,7 @@ func (s *Service) pushReportAsync() {
 	metrics := s.buildMetrics(status)
 	metrics["kernel_status"] = s.kernel.IsRunning()
 
+	reportLog, nodeID, machineID := s.reportLogger()
 	s.pushWG.Add(1)
 	go func() {
 		defer s.pushWG.Done()
@@ -1100,7 +1127,7 @@ func (s *Service) pushReportAsync() {
 			err = s.sink.Report(payload)
 		}
 		if err != nil {
-			nlog.Core().Warn("failed to push report", "error", err)
+			reportLog.Warn("failed to push report", "node_id", nodeID, "machine_id", machineID, "error", err)
 			if s.reportJournal == nil && len(traffic) > 0 {
 				s.tracker.RestoreTraffic(traffic)
 			}
@@ -1111,7 +1138,14 @@ func (s *Service) pushReportAsync() {
 			return
 		}
 		s.pushBackoff.onSuccess()
-		nlog.ReportPushed(len(traffic), len(online))
+		if s.reportJournal != nil {
+			// A successful journal tick can include older batches and leave
+			// newer batches pending; do not label freshly collected bytes as sent.
+			reportLog.Info("journal report tick succeeded", "node_id", nodeID, "machine_id", machineID, "online", len(online))
+		} else {
+			up, down := reportTrafficTotals(traffic)
+			reportLog.Info("report pushed", "node_id", nodeID, "machine_id", machineID, "traffic_users", len(traffic), "online", len(online), "upload_bytes", up, "download_bytes", down)
+		}
 	}()
 }
 
