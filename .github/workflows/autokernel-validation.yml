@@ -47,6 +47,7 @@ jobs:
       - name: Naive real client interoperability (test-only build)
         env:
           CGO_ENABLED: "1"
+          CGO_LDFLAGS_ALLOW: '^-l:libcronet[.]a$'
         run: |
           go test -v -count=1 -timeout 3m -tags "with_quic with_utls with_wireguard with_clash_api with_naive_outbound" ./internal/kernel/singbox -run '^TestNaiveClientRoundTrip$'
       - name: Build release candidate binaries
