@@ -39,16 +39,22 @@ jobs:
       - name: Static analysis
         run: go vet -tags "with_quic with_utls with_wireguard with_clash_api" ./...
       - name: Race-sensitive kernel and control-plane tests
-        run: go test -race -tags "with_quic with_utls with_wireguard with_clash_api" ./internal/model ./internal/machine ./internal/controlplane ./internal/tracker ./internal/reportjournal ./internal/service ./internal/panel ./internal/kernel/singbox
-      - name: Compile binaries
+        run: go test -race -tags "with_quic with_utls with_wireguard with_clash_api" ./internal/model ./internal/machine ./internal/controlplane ./internal/tracker ./internal/reportjournal ./internal/service ./internal/panel ./internal/kernel/singbox ./internal/monitor
+      - name: Build release candidate binaries
         run: |
-          go build -tags "with_quic with_utls with_wireguard with_clash_api" -o /tmp/xboard-node-autokernel ./cmd/xboard-node
-          go build -o /tmp/xbctl-autokernel ./cmd/xbctl
-      - name: Upload isolated test binaries
+          make build-linux build-linux-arm64 VERSION=autokernel-rc-${GITHUB_SHA:0:12}
+          mkdir -p dist
+          cp xboard-node-linux-amd64 xboard-node-linux-arm64 xbctl-linux-amd64 xbctl-linux-arm64 dist/
+          (cd dist && sha256sum xboard-node-linux-* xbctl-linux-* > SHA256SUMS)
+      - name: Smoke test native release binaries
+        run: |
+          ./dist/xboard-node-linux-amd64 --help
+          ./dist/xbctl-linux-amd64 --help
+          bash -n install.sh
+      - name: Upload release candidate binaries
         uses: actions/upload-artifact@v4
         with:
-          name: autokernel-stage1-linux-amd64
-          path: |
-            /tmp/xboard-node-autokernel
-            /tmp/xbctl-autokernel
-          retention-days: 7
+          name: autokernel-release-candidate
+          path: dist/
+          if-no-files-found: error
+          retention-days: 30
