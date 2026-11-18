@@ -887,3 +887,18 @@ func TestExtractECHInbound(t *testing.T) {
 		})
 	}
 }
+
+func TestBuildInbound_Hysteria2Alias(t *testing.T) {
+	node := testNodeSpec(&panel.NodeConfig{
+		Protocol: "hysteria2",
+		ServerPort: 8443,
+	})
+	inbound := buildInbound(node, testUsers, kernel.TLSCert{})
+	if inbound == nil {
+		t.Fatal("hysteria2 alias should build a valid inbound")
+	}
+	assertMapValue(t, inbound, "type", "hysteria2")
+	if len(inbound["users"].([]M)) != len(testUsers) {
+		t.Fatalf("unexpected hysteria2 users: %v", inbound["users"])
+	}
+}
