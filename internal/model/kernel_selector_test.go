@@ -4,11 +4,11 @@ import "testing"
 
 func TestResolveKernelForNode(t *testing.T) {
 	tests := []struct {
-		name string
-		node NodeSpec
+		name      string
+		node      NodeSpec
 		preferred string
-		want string
-		wantErr bool
+		want      string
+		wantErr   bool
 	}{
 		{"keep vless singbox", NodeSpec{Protocol: "vless", Network: "tcp"}, "singbox", "singbox", false},
 		{"vless xhttp", NodeSpec{Protocol: "vless", Network: "xhttp"}, "singbox", "xray", false},
