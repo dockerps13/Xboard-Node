@@ -73,6 +73,41 @@ restores the pending bytes into its in-memory tracker, preserving them for a
 controlled retry within that process. These bytes are **not durable across
 process exit or machine restart**; this change does not solve lost reports.
 
+### Unconfirmed report audit (implemented)
+
+During a failed **final shutdown report**, the node writes raw per-user bytes
+to `kernel.config_dir/unconfirmed-reports/<batch-id>.json` (mode 0600), using
+an atomic rename plus fsync. Machine mode stores separate journals under each
+node's own config directory. On the next startup the node warns about pending
+records; malformed records fail closed.
+
+**These records are for manual reconciliation, not retry.** A lost HTTP
+response is ambiguous: XBoard may already have billed the batch. The node
+must never replay these records automatically against the current
+non-idempotent API. This audit feature does not preserve traffic that has
+not yet been sampled, and does not journal periodic reports before sending.
+The report journal package exposes an `Acknowledge` operation only for future
+use with an explicit panel-side idempotent receipt.
+
+### Panel implementation required for commercial billing
+
+Before enabling automatic durable retries or labelling the deployment
+"exactly-once", implement an atomic report ledger in the XBoard panel:
+
+1. The node generates one unchanging report ID per raw-traffic batch.
+2. The panel durably records `(node_type, node_id, report_id)` with a
+   unique index, raw bytes, and the chosen time-dependent rate at receipt.
+3. A queued worker atomically applies user, user-stat, and server-stat
+   increments together with marking that batch as applied. Re-running the
+   worker must not increment twice.
+4. An identical report ID with a different payload must be rejected.
+5. The API acknowledges a batch only after it is stored durably, and
+   supports idempotent replay of the exact same report.
+6. Existing legacy nodes retain their original reporting endpoint and
+   behavior during migration.
+
+Do not switch to this new protocol merely because a node-side journal exists.
+
 **Outstanding mandatory commercial gate:** exactly-once billing cannot be
 guaranteed by a node-only change. The existing panel accepts non-idempotent
 traffic updates. It needs a database-backed report ID + atomic deduplication /
