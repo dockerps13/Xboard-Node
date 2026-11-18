@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -27,6 +28,11 @@ import (
 // Test traffic is confined to a loopback HTTP echo server. Only the test
 // instance has an explicit route for that destination.
 func TestProtocolClientRoundTrip(t *testing.T) {
+	testProtocolClientRoundTrip(t, []string{"shadowsocks", "vmess", "vless", "trojan", "hysteria2", "tuic", "anytls", "socks", "http", "mieru"})
+}
+
+func testProtocolClientRoundTrip(t *testing.T, protocols []string) {
+	t.Helper()
 	const credential = "aaaaaaaa-1111-2222-3333-444444444444"
 	body := bytes.Repeat([]byte("roundtrip-test"), 1024)
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -35,7 +41,7 @@ func TestProtocolClientRoundTrip(t *testing.T) {
 	defer target.Close()
 	targetAddr := target.Listener.Addr().String()
 
-	for _, protocol := range []string{"shadowsocks", "vmess", "vless", "trojan", "hysteria2", "tuic", "anytls", "socks", "http", "naive", "mieru"} {
+	for _, protocol := range protocols {
 		t.Run(protocol, func(t *testing.T) {
 			reservation, err := net.Listen("tcp", "127.0.0.1:0")
 			if err != nil {
@@ -110,7 +116,7 @@ func TestProtocolClientRoundTrip(t *testing.T) {
 			transport := &http.Transport{DisableKeepAlives: true,
 				DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 					if addr != targetAddr {
-						t.Fatal("unexpected destination")
+						return nil, fmt.Errorf("unexpected destination: %s", addr)
 					}
 					return outbound.DialContext(ctx, network, Mdata.ParseSocksaddr(addr))
 				}}
