@@ -15,6 +15,7 @@ import (
 	N "github.com/sagernet/sing/common/network"
 	"golang.org/x/time/rate"
 
+	"github.com/cedar2025/xboard-node/internal/kernel/obfs"
 	"github.com/cedar2025/xboard-node/internal/nlog"
 )
 
@@ -211,6 +212,12 @@ func (t *ConnTracker) RoutedConnection(
 ) net.Conn {
 	uuid := metadata.User
 	sourceIP := metadata.Source.Addr.String()
+	// HTTP simple-obfs terminates before sing-box and connects over
+	// loopback. Recover the real client IP using the TCP source port,
+	// so device limits and online IP reporting remain accurate.
+	if realIP, ok := obfs.ResolveOrigin(sourceIP, metadata.Source.Port); ok {
+		sourceIP = realIP
+	}
 
 	t.usersMu.RLock()
 	uid := t.uuidMap[uuid]
