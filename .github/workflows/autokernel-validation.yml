@@ -30,14 +30,14 @@ jobs:
       - name: Selector unit tests
         run: go test ./internal/model -run TestResolveKernelForNode -count=1
       - name: Complete test suite
-        run: go test ./...
+        run: go test -tags "with_quic with_utls with_wireguard with_clash_api" ./...
       - name: Static analysis
-        run: go vet ./...
+        run: go vet -tags "with_quic with_utls with_wireguard with_clash_api" ./...
       - name: Race-sensitive kernel and control-plane tests
-        run: go test -race ./internal/model ./internal/machine ./internal/controlplane ./internal/tracker ./internal/kernel/singbox
+        run: go test -race -tags "with_quic with_utls with_wireguard with_clash_api" ./internal/model ./internal/machine ./internal/controlplane ./internal/tracker ./internal/kernel/singbox
       - name: Compile binaries
         run: |
-          go build -o /tmp/xboard-node-autokernel ./cmd/xboard-node
+          go build -tags "with_quic with_utls with_wireguard with_clash_api" -o /tmp/xboard-node-autokernel ./cmd/xboard-node
           go build -o /tmp/xbctl-autokernel ./cmd/xbctl
       - name: Upload isolated test binaries
         uses: actions/upload-artifact@v4
