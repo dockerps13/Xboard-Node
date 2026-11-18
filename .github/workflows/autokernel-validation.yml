@@ -46,10 +46,18 @@ jobs:
         run: go test -race -tags "with_quic with_utls with_wireguard with_clash_api" ./internal/model ./internal/machine ./internal/controlplane ./internal/tracker ./internal/reportjournal ./internal/service ./internal/panel ./internal/kernel/singbox ./internal/kernel/obfs ./internal/monitor
       - name: Naive real client interoperability (test-only build)
         env:
-          CGO_ENABLED: "1"
-          CGO_LDFLAGS_ALLOW: '^-l:libcronet[.]a$'
+          CGO_ENABLED: "0"
         run: |
-          go test -v -count=1 -timeout 3m -tags "with_quic with_utls with_wireguard with_clash_api with_naive_outbound" ./internal/kernel/singbox -run '^TestNaiveClientRoundTrip$'
+          module=github.com/sagernet/cronet-go/lib/linux_amd64
+          go mod download "$module"
+          libdir=$(go list -m -f '{{.Dir}}' "$module")
+          test -f "$libdir/libcronet.so"
+          scratch=$(mktemp -d)
+          trap 'rm -rf "$scratch"' EXIT
+          cp "$libdir/libcronet.so" "$scratch/"
+          export LD_LIBRARY_PATH="$scratch"
+          go test -c -tags "with_quic with_utls with_wireguard with_clash_api with_naive_outbound with_purego" -o "$scratch/naive.test" ./internal/kernel/singbox
+          "$scratch/naive.test" -test.v -test.count=1 -test.timeout=3m -test.run '^TestNaiveClientRoundTrip$'
       - name: Build release candidate binaries
         run: |
           make build-linux build-linux-arm64 VERSION=v1.0.0-rc.2-${GITHUB_SHA:0:12}
