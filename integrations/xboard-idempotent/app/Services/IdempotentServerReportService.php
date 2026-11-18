@@ -118,6 +118,7 @@ final class IdempotentServerReportService
         $valid = [];
         foreach ($traffic as $uid => $counts) {
             if (!preg_match('/\A[1-9][0-9]*\z/D', (string) $uid)
+                || (string) (int) $uid !== (string) $uid
                 || !is_array($counts) || count($counts) !== 2
                 || !isset($counts[0], $counts[1])
                 || !is_int($counts[0]) || !is_int($counts[1])
