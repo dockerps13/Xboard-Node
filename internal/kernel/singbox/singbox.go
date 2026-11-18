@@ -49,6 +49,10 @@ type SingBox struct {
 	// Created fresh on every Start (full restart).
 	// Survives Reload (hot-swap) since live connections persist.
 	connTracker *ConnTracker
+	// Traffic survives full kernel swaps while old connections drain.
+	// This avoids resetting externally observed cumulative counters.
+	retiredTrackers []*ConnTracker
+	archivedTraffic map[int][2]int64
 
 	// speedLimitFunc resolves a user UUID to a *rate.Limiter.
 	// Set once by SetSpeedLimitFunc and forwarded to every new ConnTracker.
@@ -139,6 +143,11 @@ func (s *SingBox) Start(nodeConfig *model.NodeSpec, users []model.UserSpec, tls 
 	s.nodeConfig = nodeConfig
 	s.tls = tls
 
+	// Keep the old tracker visible for traffic reporting until its
+	// connections have drained and the final bytes are archived.
+	if oldTracker != nil {
+		s.retiredTrackers = append(s.retiredTrackers, oldTracker)
+	}
 	// Fresh tracker on full restart.
 	s.connTracker = NewConnTracker(0)
 	s.connTracker.SetUserMap(buildUserMap(users))
@@ -154,7 +163,9 @@ func (s *SingBox) Start(nodeConfig *model.NodeSpec, users []model.UserSpec, tls 
 
 	// Recycle old instance in background — drain then close.
 	if oldBox != nil {
-		go recycleOldBox(oldBox, oldCancel, oldCtx, oldTracker)
+		go recycleOldBox(oldBox, oldCancel, oldCtx, oldTracker, func() {
+			s.archiveRetiredTracker(oldTracker)
+		})
 	}
 
 	nlog.Core().Debug("sing-box started", "users", len(users))
@@ -164,7 +175,7 @@ func (s *SingBox) Start(nodeConfig *model.NodeSpec, users []model.UserSpec, tls 
 // recycleOldBox gracefully shuts down a previous sing-box instance in the
 // background. It closes listen sockets first, waits for connections to drain,
 // then hard-closes. This avoids blocking the new instance's startup.
-func recycleOldBox(oldBox *box.Box, oldCancel context.CancelFunc, oldCtx context.Context, oldTracker *ConnTracker) {
+func recycleOldBox(oldBox *box.Box, oldCancel context.CancelFunc, oldCtx context.Context, oldTracker *ConnTracker, onClosed func()) {
 	// Step 1: close listen sockets so no new connections arrive on old ports.
 	if im := service.FromContext[adapter.InboundManager](oldCtx); im != nil {
 		_ = im.Close()
@@ -186,7 +197,38 @@ func recycleOldBox(oldBox *box.Box, oldCancel context.CancelFunc, oldCtx context
 	if oldCancel != nil {
 		oldCancel()
 	}
+	if onClosed != nil {
+		onClosed()
+	}
 	nlog.Core().Debug("sing-box: old instance recycled")
+}
+
+// archiveRetiredTracker transfers its final counters into durable-in-process
+// accumulated totals before releasing the retired instance. The same lock
+// protects GetUserTraffic so the handoff cannot lose or duplicate bytes.
+func (s *SingBox) archiveRetiredTracker(ct *ConnTracker) {
+	if ct == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i, tracker := range s.retiredTrackers {
+		if tracker != ct {
+			continue
+		}
+		if s.archivedTraffic == nil {
+			s.archivedTraffic = make(map[int][2]int64)
+		}
+		traffic, _, _ := ct.GetUserTraffic()
+		for uid, values := range traffic {
+			existing := s.archivedTraffic[uid]
+			existing[0] += values[0]
+			existing[1] += values[1]
+			s.archivedTraffic[uid] = existing
+		}
+		s.retiredTrackers = append(s.retiredTrackers[:i], s.retiredTrackers[i+1:]...)
+		return
+	}
 }
 
 // Reload hot-swaps the inbound users and routing rules without restarting the box.
@@ -615,11 +657,39 @@ func (s *SingBox) reloadInboundsLocked(users []model.UserSpec) error {
 
 // ─── Observability ──────────────────────────────────────────────────────────
 func (s *SingBox) GetUserTraffic(_ context.Context) (traffic map[int][2]int64, aliveIPs map[int]map[string]bool, connCount int, err error) {
-	ct := s.connTrackerSafe()
-	if ct == nil {
-		return nil, nil, 0, nil
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	traffic = make(map[int][2]int64, len(s.archivedTraffic))
+	aliveIPs = make(map[int]map[string]bool)
+	for uid, values := range s.archivedTraffic {
+		traffic[uid] = values
 	}
-	traffic, aliveIPs, connCount = ct.GetUserTraffic()
+	trackers := make([]*ConnTracker, 0, len(s.retiredTrackers)+1)
+	trackers = append(trackers, s.retiredTrackers...)
+	if s.connTracker != nil {
+		trackers = append(trackers, s.connTracker)
+	}
+	for _, ct := range trackers {
+		part, ips, connections := ct.GetUserTraffic()
+		for uid, values := range part {
+			existing := traffic[uid]
+			existing[0] += values[0]
+			existing[1] += values[1]
+			traffic[uid] = existing
+		}
+		for uid, list := range ips {
+			merged := aliveIPs[uid]
+			if merged == nil {
+				merged = make(map[string]bool, len(list))
+				aliveIPs[uid] = merged
+			}
+			for ip := range list {
+				merged[ip] = true
+			}
+		}
+		connCount += connections
+	}
 	return traffic, aliveIPs, connCount, nil
 }
 
