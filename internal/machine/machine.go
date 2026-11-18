@@ -394,8 +394,10 @@ func (o *Orchestrator) onWSEvent(event panel.WSEvent) {
 				needsRestart := ok && active.kernelType != desiredKernel
 				o.mu.Unlock()
 				if needsRestart {
-					o.stopNode(nodeID) // waits for final traffic report before reuse of the port
-					o.startNode(o.runCtx, attachedNode) // re-fetches the latest full config
+					// Wait for the old service to flush traffic before port reuse.
+					o.stopNode(nodeID)
+					// Fetch the latest complete panel config for the new kernel.
+					o.startNode(o.runCtx, attachedNode)
 				}
 			}()
 			return
