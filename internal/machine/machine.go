@@ -139,10 +139,12 @@ func (o *Orchestrator) startNode(ctx context.Context, mn panel.MachineNode) {
 	nodeCfg := o.cfg.ExpandMachineNode(mn.ID, mn.Type)
 
 	perNodeClient := o.client.ForNode(mn.ID)
+	var initialSnapshot *panel.NodeConfig
 
 	// Inspect full node capabilities before launching an inbound. Never
 	// silently ignore unsupported protocol features (e.g. SS simple-obfs).
 	if cfgSnapshot, err := perNodeClient.GetConfig(); err == nil && cfgSnapshot != nil {
+		initialSnapshot = cfgSnapshot
 		resolved, selectErr := model.ResolveKernelForNode(model.NodeSpecFromPanel(cfgSnapshot), nodeCfg.Kernel.Type)
 		if selectErr != nil {
 			nlog.Core().Error(fmt.Sprintf("machine: node %d not started: %v", mn.ID, selectErr))
@@ -202,6 +204,7 @@ func (o *Orchestrator) startNode(ctx context.Context, mn panel.MachineNode) {
 	}
 
 	cp := controlplane.NewMachinePanelControlPlane(perNodeClient, nodeCfg.Kernel, push, registerFn)
+	cp.SetInitialConfig(initialSnapshot)
 	svc := service.NewWithControlPlane(nodeCfg, cp)
 
 	nlog.Core().Info(fmt.Sprintf("machine: starting node %d (%s/%s)",
