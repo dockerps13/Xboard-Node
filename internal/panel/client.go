@@ -110,7 +110,20 @@ func (c *Client) Report(traffic map[int][2]int64, alive map[int][]string, online
 	cpu float64, mem, swap, disk [2]uint64,
 	metrics map[string]interface{},
 ) error {
+	return c.ReportWithBatchID("", traffic, alive, online, cpu, mem, swap, disk, metrics)
+}
+
+// ReportWithBatchID retains the legacy wire format when batchID is empty.
+// Non-empty IDs are ONLY safe with a panel advertising atomic report-ID
+// deduplication; callers must never assume legacy panels honor the field.
+func (c *Client) ReportWithBatchID(batchID string, traffic map[int][2]int64, alive map[int][]string, online map[int]int,
+	cpu float64, mem, swap, disk [2]uint64,
+	metrics map[string]interface{},
+) error {
 	payload := make(map[string]interface{})
+	if batchID != "" {
+		payload["report_id"] = batchID
+	}
 
 	if len(traffic) > 0 {
 		t := trafficMapPool.Get().(map[string][2]int64)
