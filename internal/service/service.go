@@ -1054,7 +1054,16 @@ func (s *Service) pushReportSync() {
 	metrics["kernel_status"] = s.kernel.IsRunning()
 
 	if err := s.sink.Report(controlplane.ReportPayload{Traffic: traffic, Alive: aliveIPs, Online: online, CPU: status.CPU, Mem: [2]uint64{status.MemTotal, status.MemUsed}, Swap: [2]uint64{status.SwapTotal, status.SwapUsed}, Disk: [2]uint64{status.DiskTotal, status.DiskUsed}, Metrics: metrics}); err != nil {
-		nlog.Core().Warn("failed to push final report", "error", err)
+		nlog.Core().Warn("failed to push final report; retaining unpaid counters in memory", "error", err)
+		// Keep the pending totals available to the owning Service for a
+		// controlled retry. Durable delivery requires a panel-side idempotent
+		// receipt before persisting/replaying reports across process restarts.
+		if len(traffic) > 0 {
+			s.tracker.RestoreTraffic(traffic)
+		}
+		if len(aliveIPs) > 0 {
+			s.tracker.RestoreAliveIPs(aliveIPs)
+		}
 	}
 }
 
