@@ -296,6 +296,11 @@ func runBoundedMachineNodes(ctx context.Context, nodes []panel.MachineNode, limi
 	sem := make(chan struct{}, limit)
 	var wg sync.WaitGroup
 	for _, node := range nodes {
+		// An already-cancelled context must not race a ready semaphore send.
+		if ctx.Err() != nil {
+			wg.Wait()
+			return
+		}
 		select {
 		case <-ctx.Done():
 			wg.Wait()
