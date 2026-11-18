@@ -11,6 +11,7 @@ return new class extends Migration {
             $table->bigIncrements('id');
             $table->unsignedBigInteger('server_id');
             $table->string('server_type', 32);
+            $table->string('protocol', 32);
             $table->char('report_id', 32);
             $table->char('payload_hash', 64);
             $table->longText('payload_json');
