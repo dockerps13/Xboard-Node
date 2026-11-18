@@ -1016,6 +1016,50 @@ func (s *Service) trackAndEnforce(ctx context.Context) {
 	}
 }
 
+// reportWithJournal stores every raw-traffic delta before contacting a panel
+// that explicitly advertised idempotent report IDs. Replaying a pending batch
+// always reuses its original ID, so lost HTTP replies cannot double-charge
+// on a correctly implemented server.
+func (s *Service) reportWithJournal(payload controlplane.ReportPayload) error {
+	if s.reportJournal == nil {
+		return fmt.Errorf("idempotent report journal is not initialized")
+	}
+	if len(payload.Traffic) > 0 {
+		if _, err := s.reportJournal.Append(payload.Traffic); err != nil {
+			// Nothing has been sent; retain the bytes for the next tick.
+			s.tracker.RestoreTraffic(payload.Traffic)
+			return fmt.Errorf("persist report batch: %w", err)
+		}
+	}
+	pending, err := s.reportJournal.Pending()
+	if err != nil {
+		return fmt.Errorf("read persisted report batches: %w", err)
+	}
+	// Bound work on each reporting tick. A large backlog is retried over
+	// subsequent ticks without blocking kernel tracking for minutes.
+	count := len(pending)
+	if count > 4 {
+		count = 4
+	}
+	for _, batch := range pending[:count] {
+		attempt := payload
+		attempt.BatchID = batch.ID
+		attempt.Traffic = batch.Traffic
+		if err := s.sink.Report(attempt); err != nil {
+			return fmt.Errorf("batch %s: %w", batch.ID, err)
+		}
+		if err := s.reportJournal.Acknowledge(batch.ID); err != nil {
+			return fmt.Errorf("acknowledge batch %s: %w", batch.ID, err)
+		}
+	}
+	// Continue sending status and online metrics even with no traffic.
+	if len(pending) == 0 {
+		payload.Traffic = nil
+		return s.sink.Report(payload)
+	}
+	return nil
+}
+
 // pushReportAsync sends the report in a background goroutine so the select
 // loop is never blocked by slow HTTP. Only one push runs at a time.
 func (s *Service) pushReportAsync() {
