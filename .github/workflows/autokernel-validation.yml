@@ -34,7 +34,7 @@ jobs:
       - name: Static analysis
         run: go vet -tags "with_quic with_utls with_wireguard with_clash_api" ./...
       - name: Race-sensitive kernel and control-plane tests
-        run: go test -race -tags "with_quic with_utls with_wireguard with_clash_api" ./internal/model ./internal/machine ./internal/controlplane ./internal/tracker ./internal/reportjournal ./internal/kernel/singbox
+        run: go test -race -tags "with_quic with_utls with_wireguard with_clash_api" ./internal/model ./internal/machine ./internal/controlplane ./internal/tracker ./internal/reportjournal ./internal/service ./internal/panel ./internal/kernel/singbox
       - name: Compile binaries
         run: |
           go build -tags "with_quic with_utls with_wireguard with_clash_api" -o /tmp/xboard-node-autokernel ./cmd/xboard-node
