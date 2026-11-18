@@ -62,6 +62,8 @@ func TestProtocolClientRoundTrip(t *testing.T) {
 				out["tls"] = M{"enabled": true, "server_name": "localhost", "certificate": string(cert.CertPEM)}
 				if protocol == "tuic" {
 					out["uuid"] = credential
+					// Match the server default ALPN for TUIC over QUIC.
+					out["tls"].(M)["alpn"] = []string{"h3"}
 				}
 			}
 			cfg := config.KernelConfig{Type: "singbox", LogLevel: "error", ConfigDir: t.TempDir(),
