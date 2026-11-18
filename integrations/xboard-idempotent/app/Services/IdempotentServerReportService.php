@@ -49,6 +49,7 @@ final class IdempotentServerReportService
             DB::table('v2_server_report_batches')->insertOrIgnore([
                 'server_id' => (int) $node->id,
                 'server_type' => (string) $node->type,
+                'protocol' => (string) $protocol,
                 'report_id' => $reportId,
                 'payload_hash' => $hash,
                 'payload_json' => json_encode($processed, JSON_THROW_ON_ERROR),
