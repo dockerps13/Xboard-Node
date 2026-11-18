@@ -155,8 +155,19 @@ func (o *Orchestrator) startNode(ctx context.Context, mn panel.MachineNode) {
 				mn.ID, nodeCfg.Kernel.Type, resolved, cfgSnapshot.Protocol, cfgSnapshot.Network))
 			nodeCfg.Kernel.Type = resolved
 		}
-	} else if err != nil {
-		nlog.Core().Warn("machine: kernel auto-selection postponed because node config fetch failed", "node_id", mn.ID, "error", err)
+	} else {
+		if err == nil {
+			err = fmt.Errorf("panel returned empty node config")
+		}
+		nlog.Core().Warn("machine: waiting for node config before selecting kernel", "node_id", mn.ID, "error", err)
+		cancel()
+		o.mu.Lock()
+		delete(o.nodes, mn.ID)
+		o.mu.Unlock()
+		o.eventsMu.Lock()
+		delete(o.mailboxes, mn.ID)
+		o.eventsMu.Unlock()
+		return
 	}
 	// Reset cached ETag so the subsequent GetConfig in Initial() gets a full response.
 	perNodeClient.ResetConfigETag()
