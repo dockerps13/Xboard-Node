@@ -35,3 +35,11 @@ jobs:
         run: |
           go build -o /tmp/xboard-node-autokernel ./cmd/xboard-node
           go build -o /tmp/xbctl-autokernel ./cmd/xbctl
+      - name: Upload isolated test binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: autokernel-stage1-linux-amd64
+          path: |
+            /tmp/xboard-node-autokernel
+            /tmp/xbctl-autokernel
+          retention-days: 7
