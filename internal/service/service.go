@@ -186,6 +186,10 @@ func (s *Service) Run(ctx context.Context) error {
 	}
 	defer s.kernel.Stop()
 
+	// Surface unresolved billing records on restart. We deliberately
+	// never auto-replay them against a non-idempotent legacy panel.
+	s.warnUnconfirmedReports()
+
 	// Set up tickers
 	trackTicker := time.NewTicker(time.Duration(s.cfg.Node.TrackInterval) * time.Second)
 	pushInterval := time.Duration(math.Max(float64(s.pushInterval), 5)) * time.Second
@@ -1041,6 +1045,30 @@ func (s *Service) pushReportAsync() {
 		s.pushBackoff.onSuccess()
 		nlog.ReportPushed(len(traffic), len(online))
 	}()
+}
+
+// warnUnconfirmedReports highlights ambiguous previous shutdown reports.
+// They may or may not have been charged by XBoard and require operator
+// reconciliation until the panel provides atomic report-ID deduplication.
+func (s *Service) warnUnconfirmedReports() {
+	if s.cfg == nil || s.cfg.Kernel.ConfigDir == "" || !s.sink.SupportsReporting() {
+		return
+	}
+	path := filepath.Join(s.cfg.Kernel.ConfigDir, "unconfirmed-reports")
+	j, err := reportjournal.Open(path)
+	if err != nil {
+		nlog.Core().Error("cannot open local unconfirmed report journal", "error", err)
+		return
+	}
+	batches, err := j.Pending()
+	if err != nil {
+		nlog.Core().Error("corrupt or unreadable unconfirmed reports; manual repair required", "error", err, "path", path)
+		return
+	}
+	if len(batches) > 0 {
+		nlog.Core().Warn("unconfirmed traffic reports from previous runs require manual billing reconciliation; automatic replay disabled",
+			"count", len(batches), "path", path)
+	}
 }
 
 // pushReportSync is used only during shutdown to ensure final data is sent.
