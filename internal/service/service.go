@@ -37,6 +37,8 @@ type Service struct {
 	sink         controlplane.Sink
 	kernel       kernel.Kernel
 	tracker      *tracker.Tracker
+	// Enabled only when the panel advertises durable report-ID deduplication.
+	reportJournal *reportjournal.Journal
 	limiter      *limiter.Limiter
 	speedTracker *limiter.SpeedTracker
 	cert         *cert.Manager
@@ -269,6 +271,16 @@ func (s *Service) initialSetup(ctx context.Context) error {
 	bootstrap, err := s.source.Initial(ctx, s.wsMetrics, s.wsEvents, s.wsStatusCh)
 	if err != nil {
 		return err
+	}
+	if bootstrap.IdempotentReports && s.sink.SupportsReporting() {
+		if s.cfg.Kernel.ConfigDir == "" {
+			return fmt.Errorf("panel requires idempotent billing but kernel.config_dir is empty")
+		}
+		journal, journalErr := reportjournal.Open(filepath.Join(s.cfg.Kernel.ConfigDir, "idempotent-reports"))
+		if journalErr != nil {
+			return fmt.Errorf("open durable idempotent billing journal: %w", journalErr)
+		}
+		s.reportJournal = journal
 	}
 
 	if s.cfg.Node.PushInterval == 0 && bootstrap.PushInterval > 0 {
