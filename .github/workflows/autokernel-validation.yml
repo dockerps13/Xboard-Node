@@ -64,6 +64,13 @@ jobs:
           for n in 100 500 1000 5000; do
             XBOARD_TEST_CONNECTIONS="$n" go test -v -count=1 -timeout 3m -tags "with_quic with_utls with_wireguard with_clash_api" ./internal/kernel/singbox -run '^TestMixedProtocolConcurrentLoad$'
           done
+      - name: Encrypted protocol concurrent load and repeated recovery
+        run: |
+          ulimit -n 65536
+          for n in 500 1000 5000; do
+            XBOARD_TEST_CONNECTIONS="$n" go test -v -count=1 -timeout 3m -tags "with_quic with_utls with_wireguard with_clash_api" ./internal/kernel/singbox -run '^TestEncryptedProtocolConcurrentLoad$'
+          done
+          XBOARD_TEST_CONNECTIONS=1000 go test -v -count=5 -timeout 5m -tags "with_quic with_utls with_wireguard with_clash_api" ./internal/kernel/singbox -run '^TestEncryptedProtocolConcurrentLoad$'
       - name: Build release candidate binaries
         run: |
           make build-linux build-linux-arm64 VERSION=v1.0.0-rc.2-${GITHUB_SHA:0:12}
