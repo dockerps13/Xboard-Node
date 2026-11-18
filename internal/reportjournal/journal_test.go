@@ -2,6 +2,7 @@ package reportjournal
 
 import (
 	"os"
+	"encoding/json"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -58,5 +59,34 @@ func TestCorruptJournalFailsClosed(t *testing.T) {
 	if err := os.WriteFile(j.path(b.ID), []byte("{not-json"), 0o600); err != nil { t.Fatal(err) }
 	if _, err := j.Pending(); err == nil || !strings.Contains(err.Error(), "decode") {
 		t.Fatalf("corrupt pending batch should block replay, got %v", err)
+	}
+}
+
+func TestJournalRecoversFullyWrittenTempAfterCrash(t *testing.T) {
+	dir := t.TempDir()
+	batch := Batch{
+		ID: "0123456789abcdef0123456789abcdef",
+		CreatedAt: 42,
+		Traffic: map[int][2]int64{7: {10, 20}},
+	}
+	raw, err := json.Marshal(batch)
+	if err != nil { t.Fatal(err) }
+	if err := os.WriteFile(filepath.Join(dir, ".pending-interrupted"), raw, 0o600); err != nil { t.Fatal(err) }
+	j, err := Open(dir)
+	if err != nil { t.Fatal(err) }
+	pending, err := j.Pending()
+	if err != nil || len(pending) != 1 || pending[0].ID != batch.ID {
+		t.Fatalf("recovered pending=%+v err=%v", pending, err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, ".pending-interrupted")); !os.IsNotExist(err) {
+		t.Fatalf("temporary file not removed, err=%v", err)
+	}
+}
+
+func TestJournalRefusesTruncatedCrashTemp(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, ".pending-corrupt"), []byte("{"), 0o600); err != nil { t.Fatal(err) }
+	if _, err := Open(dir); err == nil {
+		t.Fatal("crash-truncated journal must block startup and require recovery")
 	}
 }
