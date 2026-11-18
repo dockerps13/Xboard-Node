@@ -1,6 +1,10 @@
 package model
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/cedar2025/xboard-node/internal/config"
+)
 
 func TestResolveKernelForNode(t *testing.T) {
 	tests := []struct {
@@ -35,6 +39,18 @@ func TestResolveKernelForNode(t *testing.T) {
 			got, err := ResolveKernelForNode(&tc.node, tc.preferred)
 			if (err != nil) != tc.wantErr || got != tc.want {
 				t.Fatalf("got (%q, %v), want (%q, error=%v)", got, err, tc.want, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestValidateNodeSpecRejectsUnsupportedSSPlugin(t *testing.T) {
+	for _, kernelType := range []string{"singbox", "xray"} {
+		t.Run(kernelType, func(t *testing.T) {
+			node := &NodeSpec{Protocol: "shadowsocks", Cipher: "aes-128-gcm", Plugin: "obfs", PluginOpt: "obfs=http"}
+			err := ValidateNodeSpec(node, config.KernelConfig{Type: kernelType})
+			if err == nil {
+				t.Fatalf("expected unsupported SS plugin to fail validation for %s", kernelType)
 			}
 		})
 	}
