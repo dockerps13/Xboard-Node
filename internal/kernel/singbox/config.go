@@ -445,7 +445,7 @@ func buildInbound(nc *model.NodeSpec, users []model.UserSpec, tc kernel.TLSCert)
 		return buildVLESS(base, nc, users, tc)
 	case "trojan":
 		return buildTrojan(base, nc, users, tc)
-	case "hysteria":
+	case "hysteria", "hysteria2":
 		return buildHysteria(base, nc, users, tc)
 	case "tuic":
 		return buildTUIC(base, nc, users, tc)
@@ -637,7 +637,7 @@ func buildTrojan(base M, nc *model.NodeSpec, users []model.UserSpec, tc kernel.T
 }
 
 func buildHysteria(base M, nc *model.NodeSpec, users []model.UserSpec, tc kernel.TLSCert) M {
-	if nc.Version == 2 {
+	if nc.Version == 2 || nc.Protocol == "hysteria2" {
 		base["type"] = "hysteria2"
 
 		userList := make([]M, 0, len(users))
