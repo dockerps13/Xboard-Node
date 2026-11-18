@@ -46,6 +46,16 @@ new report_id protocol.
        try {
            $receipt = app(\App\Services\IdempotentServerReportService::class)
                ->accept($node, (string) $request->input('report_id'), (array) $traffic);
+           // Match legacy ServerService::processTraffic cache side effects.
+           $nodeType = strtoupper((string) $node->type);
+           \Illuminate\Support\Facades\Cache::put(
+               \App\Utils\CacheKey::get("SERVER_{$nodeType}_ONLINE_USER", $node->id),
+               count((array) $traffic), 3600
+           );
+           \Illuminate\Support\Facades\Cache::put(
+               \App\Utils\CacheKey::get("SERVER_{$nodeType}_LAST_PUSH_AT", $node->id),
+               time(), 3600
+           );
        } catch (\InvalidArgumentException $e) {
            return response()->json(['message' => $e->getMessage()], 422);
        } catch (\RuntimeException $e) {
