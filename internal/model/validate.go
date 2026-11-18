@@ -39,6 +39,11 @@ func ValidateNodeSpec(n *NodeSpec, kcfg config.KernelConfig) error {
 	if err := validateTransportKernel(n.Network, kernelType); err != nil {
 		return err
 	}
+	// Neither embedded SS inbound implements SIP003 server-side plugins.
+	// Reject explicitly in every mode, not just machine auto-selection.
+	if strings.EqualFold(strings.TrimSpace(n.Protocol), "shadowsocks") && strings.TrimSpace(n.Plugin) != "" {
+		return fmt.Errorf("shadowsocks plugin %q requires an external server-side adapter (unsupported by %s)", n.Plugin, kernelType)
+	}
 	return nil
 }
 
