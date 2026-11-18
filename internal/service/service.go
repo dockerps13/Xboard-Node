@@ -802,6 +802,9 @@ func (s *Service) applyUserUpdate(ctx context.Context, users []model.UserSpec, n
 		return
 	}
 
+	// Capture counters while the old identities are still registered.
+	// Otherwise removing users can drop their last unreported bytes.
+	s.trackAndEnforce(ctx)
 	prevUsers, prevHash := s.prepareUserState(users)
 	added, removed, err := s.kernel.UpdateUsers(users)
 	if err != nil {
@@ -843,6 +846,8 @@ func (s *Service) applyUserDelta(ctx context.Context, action string, deltaUsers 
 			}
 		}
 
+		// Count traffic before the user map changes, including replaced UUIDs.
+		s.trackAndEnforce(ctx)
 		prevUsers, prevHash := s.prepareUserState(merged)
 		added, err := s.kernel.AddUsers(deltaUsers)
 		if err != nil {
@@ -868,6 +873,8 @@ func (s *Service) applyUserDelta(ctx context.Context, action string, deltaUsers 
 			return
 		}
 
+		// The kernel may discard counters for users when they are removed.
+		s.trackAndEnforce(ctx)
 		prevUsers, prevHash := s.prepareUserState(filtered)
 		removed, err := s.kernel.RemoveUsers(deltaUsers)
 		if err != nil {
@@ -940,6 +947,9 @@ func (s *Service) applyChanges(ctx context.Context, configChanged, usersChanged 
 		return
 	}
 
+	// Snapshot the old kernel counters before a reload/reconstruction.
+	// Sampling after Reload can lose trailing traffic or see reset counters.
+	s.trackAndEnforce(ctx)
 	if s.lastConfig == nil || len(s.lastUsers) == 0 {
 		if len(s.lastUsers) == 0 {
 			s.kernel.Stop()
