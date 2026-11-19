@@ -276,3 +276,29 @@ func TestCanonicalDeviceAddressesAcrossNodes(t *testing.T) {
 		t.Fatalf("incorrect cross-node union: %v", union)
 	}
 }
+
+
+func TestClearLiveDevicesPreservesTrafficAndOfflineNotice(t *testing.T) {
+	tr := New()
+	tr.Process(map[int][2]int64{2: {100, 200}}, map[int]map[string]bool{2: {"192.0.2.1": true}}, 1)
+	tr.AcknowledgeAliveIPs(tr.FlushAliveIPs())
+	tr.ClearLiveDevices()
+	if len(tr.CurrentOnline()) != 0 || tr.ActiveConnections() != 0 {
+		t.Fatal("stopped kernel still appears online")
+	}
+	alive := tr.FlushAliveIPs()
+	if ips, ok := alive[2]; !ok || ips == nil || len(ips) != 0 {
+		t.Fatalf("missing explicit offline notice: %#v", alive)
+	}
+	if traffic := tr.FlushTraffic(); traffic[2] != [2]int64{100, 200} {
+		t.Fatalf("shutdown discarded traffic: %#v", traffic)
+	}
+	tr.RestoreAliveIPs(alive)
+	if _, ok := tr.FlushAliveIPs()[2]; !ok {
+		t.Fatal("failed offline notice was lost")
+	}
+	tr.AcknowledgeAliveIPs(alive)
+	if len(tr.FlushAliveIPs()) != 0 {
+		t.Fatal("confirmed offline notice was not cleared")
+	}
+}

@@ -140,6 +140,18 @@ func (t *Tracker) Process(
 	})
 }
 
+// ClearLiveDevices publishes an empty connection snapshot after the kernel
+// stops, without discarding pending traffic or unconfirmed offline notices.
+func (t *Tracker) ClearLiveDevices() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.live.Store(&snapshot{
+		traffic:  copyTrafficMap(t.pendingTraffic),
+		aliveIPs: make(map[int]map[string]bool),
+		online:   make(map[int]int),
+	})
+}
+
 // FlushTraffic returns accumulated per-user traffic and resets the pending buffer.
 // Lock-free: reads from live snapshot, then acquires mu only to drain.
 func (t *Tracker) FlushTraffic() map[int][2]int64 {

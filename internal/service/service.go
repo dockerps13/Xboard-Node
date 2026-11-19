@@ -186,7 +186,12 @@ func (s *Service) Run(ctx context.Context) error {
 	if err := s.initialSetup(ctx); err != nil {
 		return fmt.Errorf("initial setup: %w", err)
 	}
-	defer s.kernel.Stop()
+	kernelStopped := false
+	defer func() {
+		if !kernelStopped {
+			s.kernel.Stop()
+		}
+	}()
 
 	// Surface unresolved billing records on restart. We deliberately
 	// never auto-replay them against a non-idempotent legacy panel.
@@ -224,6 +229,11 @@ func (s *Service) Run(ctx context.Context) error {
 			// Wait for an in-flight report to finish restoring failed deltas
 			// before draining the final buffer, preventing lost accounting.
 			s.pushWG.Wait()
+			// Stop accepting connections before publishing the final offline
+			// snapshot. Keep the previously collected traffic deltas intact.
+			s.kernel.Stop()
+			kernelStopped = true
+			s.tracker.ClearLiveDevices()
 			s.pushReportSync()
 			return nil
 
