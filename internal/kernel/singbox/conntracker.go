@@ -551,31 +551,21 @@ type trackedConn struct {
 
 func (c *trackedConn) Read(b []byte) (int, error) {
 	if c.limiter != nil {
-		if burst := c.limiter.Burst(); len(b) > burst {
+		burst := c.limiter.Burst()
+		if burst <= 0 && len(b) > 0 {
+			return 0, fmt.Errorf("invalid rate limiter burst")
+		}
+		if len(b) > burst {
 			b = b[:burst]
 		}
 	}
 	n, err := c.Conn.Read(b)
 	if n > 0 {
 		if c.us != nil {
-			c.us.upload.Add(int64(n)) // 从入站读取 = 用户上传
+			c.us.upload.Add(int64(n))
 		}
-		if c.limiter != nil {
-			// Non-blocking rate limiting
-			if !c.limiter.AllowN(time.Now(), n) {
-				resv := c.limiter.ReserveN(time.Now(), n)
-				if delay := resv.Delay(); delay > 0 {
-					timer := time.NewTimer(delay)
-					defer timer.Stop()
-					select {
-					case <-timer.C:
-						// Tokens available
-					case <-c.ctx.Done():
-						resv.Cancel()
-						return n, c.ctx.Err()
-					}
-				}
-			}
+		if limitErr := waitPacketBudget(c.ctx, c.limiter, n); limitErr != nil {
+			return n, limitErr
 		}
 	}
 	return n, err
@@ -627,24 +617,10 @@ func (c *trackedConn) Close() error {
 // makeCountFunc builds a CountFunc for zero-copy byte counting via sing's
 // ReadCounter/WriteCounter unwrap interfaces.
 func (c *trackedConn) makeCountFunc(counter *atomic.Int64) N.CountFunc {
-	if c.limiter == nil {
-		return func(n int64) { counter.Add(n) }
-	}
 	return func(n int64) {
 		counter.Add(n)
-		// Non-blocking rate limiting with context cancellation
-		if !c.limiter.AllowN(time.Now(), int(n)) {
-			resv := c.limiter.ReserveN(time.Now(), int(n))
-			if delay := resv.Delay(); delay > 0 {
-				timer := time.NewTimer(delay)
-				defer timer.Stop()
-				select {
-				case <-timer.C:
-					// Tokens available
-				case <-c.ctx.Done():
-					resv.Cancel()
-				}
-			}
+		if c.limiter != nil && n > 0 {
+			_ = waitPacketBudget(c.ctx, c.limiter, int(n))
 		}
 	}
 }
@@ -664,8 +640,8 @@ func (c *trackedConn) UnwrapWriter() (io.Writer, []N.CountFunc) {
 }
 
 func (c *trackedConn) Upstream() any           { return c.Conn }
-func (c *trackedConn) ReaderReplaceable() bool { return true }
-func (c *trackedConn) WriterReplaceable() bool { return true }
+func (c *trackedConn) ReaderReplaceable() bool { return c.limiter == nil }
+func (c *trackedConn) WriterReplaceable() bool { return c.limiter == nil }
 
 // ─── trackedPacketConn (UDP / QUIC) ─────────────────────────────────────────
 
@@ -742,24 +718,10 @@ func (c *trackedPacketConn) Close() error {
 }
 
 func (c *trackedPacketConn) makeCountFunc(counter *atomic.Int64) N.CountFunc {
-	if c.limiter == nil {
-		return func(n int64) { counter.Add(n) }
-	}
 	return func(n int64) {
 		counter.Add(n)
-		// Non-blocking rate limiting with context cancellation
-		if !c.limiter.AllowN(time.Now(), int(n)) {
-			resv := c.limiter.ReserveN(time.Now(), int(n))
-			if delay := resv.Delay(); delay > 0 {
-				timer := time.NewTimer(delay)
-				defer timer.Stop()
-				select {
-				case <-timer.C:
-					// Tokens available
-				case <-c.ctx.Done():
-					resv.Cancel()
-				}
-			}
+		if c.limiter != nil && n > 0 {
+			_ = waitPacketBudget(c.ctx, c.limiter, int(n))
 		}
 	}
 }
