@@ -70,7 +70,7 @@ func testProtocolClientRoundTrip(t *testing.T, protocols []string) {
 				out["password"] = credential
 				out["tls"] = M{"enabled": true, "server_name": "localhost", "certificate": string(cert.CertPEM)}
 				if protocol == "naive" {
-					out["username"] = "1"
+					out["username"] = credential
 				}
 				if protocol == "tuic" {
 					out["uuid"] = credential

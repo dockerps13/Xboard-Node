@@ -760,6 +760,12 @@ func buildNaive(base M, nc *model.NodeSpec, users []model.UserSpec, tc kernel.TL
 	userList := make([]M, 0, len(users))
 	for _, u := range users {
 		userList = append(userList, M{
+			"username": u.UUID,
+			"password": u.UUID,
+		})
+		// Preserve existing numeric logins during upgrades. Both identities
+		// resolve to the same accounting user through setTrackerUsers.
+		userList = append(userList, M{
 			"username": strconv.Itoa(u.ID),
 			"password": u.UUID,
 		})

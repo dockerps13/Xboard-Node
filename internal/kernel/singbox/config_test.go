@@ -425,7 +425,9 @@ func TestBuildInbound_Naive(t *testing.T) {
 	assertMapValue(t, inbound, "type", "naive")
 
 	users := inbound["users"].([]M)
-	assertMapValue(t, users[0], "username", "1")
+	assertMapValue(t, users[0], "username", "aaaaaaaa-1111-2222-3333-444444444444")
+	assertMapValue(t, users[1], "username", "1")
+	assertMapValue(t, users[1], "password", "aaaaaaaa-1111-2222-3333-444444444444")
 	assertMapValue(t, users[0], "password", "aaaaaaaa-1111-2222-3333-444444444444")
 
 	tls := inbound["tls"].(M)
