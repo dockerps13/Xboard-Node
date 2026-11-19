@@ -80,7 +80,11 @@ jobs:
       - name: Build release candidate binaries
         if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[full-ci]')
         run: |
-          make build-linux build-linux-arm64 VERSION=v1.0.0-rc.3-${GITHUB_SHA:0:12}
+          version=v1.0.0-rc.3
+          if [ "$GITHUB_REF" = "refs/heads/feature/autokernel-rc4-device-report" ]; then
+            version=v1.0.0-rc.4
+          fi
+          make build-linux build-linux-arm64 VERSION="$version-${GITHUB_SHA:0:12}"
           mkdir -p dist
           cp xboard-node-linux-amd64 xboard-node-linux-arm64 xbctl-linux-amd64 xbctl-linux-arm64 dist/
           (cd dist && sha256sum xboard-node-linux-* xbctl-linux-* > SHA256SUMS)
@@ -130,3 +134,36 @@ jobs:
             exit 1
           fi
           gh release create v1.0.0-rc.3 SHA256SUMS xboard-node-linux-amd64 xboard-node-linux-arm64 xbctl-linux-amd64 xbctl-linux-arm64 --target "$GITHUB_SHA" --prerelease --latest=false --title "V1.0.0 RC.3" --notes "Candidate built and validated in workflow run ${GITHUB_RUN_ID} (commit ${GITHUB_SHA}). Includes TCP/UDP limiter fixes, connection revocation and billing recovery protection. Legacy ambiguous reports require manual reconciliation. Real server upgrade, rollback and 24-hour validation are pending. Not a stable release. Embedded build version: v1.0.0-rc.3-${GITHUB_SHA:0:12}."
+
+  publish-rc4:
+    name: Publish verified RC.4 candidate
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/feature/autokernel-rc4-device-report' && contains(github.event.head_commit.message, '[publish-rc4]') && contains(github.event.head_commit.message, '[full-ci]')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: autokernel-release-candidate
+          path: dist
+      - name: Publish immutable prerelease assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum -c SHA256SUMS
+          test -f xboard-node-linux-amd64
+          test -f xboard-node-linux-arm64
+          test -f xbctl-linux-amd64
+          test -f xbctl-linux-arm64
+          chmod +x xboard-node-linux-amd64
+          ./xboard-node-linux-amd64 -v | grep -F "v1.0.0-rc.4-${GITHUB_SHA:0:12}"
+          if gh release view v1.0.0-rc.4 >/dev/null 2>&1; then
+            echo "RC.4 already exists; refusing to overwrite"
+            exit 1
+          fi
+          gh release create v1.0.0-rc.4 SHA256SUMS xboard-node-linux-amd64 xboard-node-linux-arm64 xbctl-linux-amd64 xbctl-linux-arm64 --target "$GITHUB_SHA" --prerelease --latest=false --title "V1.0.0 RC.4" --notes "Candidate built and validated in workflow run ${GITHUB_RUN_ID} (commit ${GITHUB_SHA}). Includes RC3 fixes plus periodic device refresh, explicit per-user offline arrays and retry of unconfirmed device updates. Legacy ambiguous reports require manual reconciliation. Real server upgrade, rollback and 24-hour validation are pending. Not a stable release. Embedded build version: v1.0.0-rc.4-${GITHUB_SHA:0:12}."
