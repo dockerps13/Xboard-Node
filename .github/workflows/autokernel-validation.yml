@@ -87,60 +87,7 @@ jobs:
         if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[full-ci]')
         run: |
           ulimit -n 65536
-          XBOARD_TEST_CONNECTIONS=1000 XBOARD_TEST_RESOURCE_RECOVERY=1 go test -v -count=3 -timeout 8m -tags "with_quic with_utls with_wireguard with_clash_api" ./internal/kernel/singbox -run '^TestEncryptedProtocolConcurrentLoad
-        if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[full-ci]')
-        run: |
-          make build-linux build-linux-arm64 VERSION=v1.0.0-rc.5-${GITHUB_SHA:0:12}
-          mkdir -p dist
-          cp xboard-node-linux-amd64 xboard-node-linux-arm64 xbctl-linux-amd64 xbctl-linux-arm64 dist/
-          (cd dist && sha256sum xboard-node-linux-* xbctl-linux-* > SHA256SUMS)
-      - name: Smoke test native release binaries
-        if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[full-ci]')
-        run: |
-          ./dist/xboard-node-linux-amd64 -v | grep -F "v1.0.0-rc.5-${GITHUB_SHA:0:12}"
-          ./dist/xboard-node-linux-amd64 --help
-          ./dist/xbctl-linux-amd64 --help
-          bash -n install.sh
-      - name: Upload release candidate binaries
-        if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[full-ci]')
-        uses: actions/upload-artifact@v4
-        with:
-          name: autokernel-release-candidate
-          path: dist/
-          if-no-files-found: error
-          retention-days: 7
-
-
-  publish-rc5:
-    name: Publish verified RC.5 candidate
-    needs: test
-    if: github.event_name == 'push' && github.ref == 'refs/heads/feature/autokernel-stage1' && contains(github.event.head_commit.message, '[publish-rc5]') && contains(github.event.head_commit.message, '[full-ci]')
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      actions: read
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: autokernel-release-candidate
-          path: dist
-      - name: Verify and publish candidate
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-        run: |
-          set -euo pipefail
-          cd dist
-          sha256sum -c SHA256SUMS
-          for f in xboard-node-linux-amd64 xboard-node-linux-arm64 xbctl-linux-amd64 xbctl-linux-arm64; do test -s "$f"; done
-          chmod +x xboard-node-linux-amd64
-          ./xboard-node-linux-amd64 -v | grep -F "v1.0.0-rc.5-${GITHUB_SHA:0:12}"
-          if gh release view v1.0.0-rc.5 >/dev/null 2>&1; then
-            echo "RC.5 already exists; refusing to overwrite"
-            exit 1
-          fi
-          gh release create v1.0.0-rc.5 SHA256SUMS xboard-node-linux-amd64 xboard-node-linux-arm64 xbctl-linux-amd64 xbctl-linux-arm64 --target "$GITHUB_SHA" --prerelease --latest=false --title "V1.0.0 RC.5" --notes "Candidate from workflow ${GITHUB_RUN_ID}, commit ${GITHUB_SHA}. Adds device recovery, shutdown cleanup, diagnostic logging and device admission fixes. REST global snapshots require explicit panel integration; Redis strict admission is experimental and not wired into production. Legacy billing ambiguity still requires reconciliation. Real upgrade/rollback, cross-node validation and 24-hour soak remain mandatory before stable release."
-
+          XBOARD_TEST_CONNECTIONS=1000 XBOARD_TEST_RESOURCE_RECOVERY=1 go test -v -count=3 -timeout 8m -tags "with_quic with_utls with_wireguard with_clash_api" ./internal/kernel/singbox -run '^TestEncryptedProtocolConcurrentLoad$'
       - name: Build release candidate binaries
         if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[full-ci]')
         run: |
