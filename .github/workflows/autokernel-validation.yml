@@ -35,6 +35,11 @@ jobs:
           find integrations -name '*.php' -print0 |
             xargs -0 -n 1 php -l
           php integrations/xboard-device-snapshots/tests/snapshot.php
+      - name: Redis device reservation concurrency tests
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y redis-server
+          bash integrations/xboard-device-snapshots/tests/reservation.sh
       - name: Installer safety tests
         run: |
           bash -n install.sh
