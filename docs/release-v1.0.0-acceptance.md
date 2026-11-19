@@ -14,3 +14,7 @@ RC.5 is a feature-freeze candidate, not a stable release. Existing RC.4 assets r
 - [ ] Installer explicit version and rollback documentation, release notes and known limitations reviewed.
 
 Experimental PHP snapshot and Redis lease components are not installed automatically. Keep capabilities disabled until real panel authorization, Redis failure, and compatibility tests pass. Idempotent traffic integration remains opt-in. Stable release must be separately authorized after evidence review. No automatic stable/latest publication in this workflow.
+
+## Final engineering candidate and stable publication
+
+RC.6 incorporates post-RC.5 engineering changes. The validation workflow publishes only an immutable prerelease, with matching installer and SOURCE_COMMIT covered by the checksum manifest. RC.5 staging evidence is useful but does not substitute for RC.6 acceptance. Stable publication must be a separate, explicitly approved action after review of evidence for the exact source commit; use a new stable build with the stable version embedded and repeat CI and deployment verification. Do not overwrite RC.4, RC.5 or RC.6 assets or mark a candidate latest. Until that action is implemented and approved, no workflow publishes v1.0.0 stable.
