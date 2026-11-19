@@ -39,6 +39,7 @@ type Service struct {
 	tracker      *tracker.Tracker
 	// Enabled only when the panel advertises durable report-ID deduplication.
 	reportJournal *reportjournal.Journal
+	deviceState *deviceReportState
 	limiter      *limiter.Limiter
 	speedTracker *limiter.SpeedTracker
 	cert         *cert.Manager
@@ -181,6 +182,19 @@ func (s *Service) Run(ctx context.Context) error {
 		return fmt.Errorf("cert manager: %w", err)
 	}
 	defer s.cert.Stop()
+
+	// Load per-node device recovery state before accepting connections.
+	if s.sink.SupportsReporting() && s.cfg.Kernel.ConfigDir != "" {
+		state, err := openDeviceReportState(s.cfg)
+		if err != nil {
+			return fmt.Errorf("open device recovery state: %w", err)
+		}
+		s.deviceState = state
+		s.tracker.RestoreAliveIPs(state.snapshot())
+		if len(state.users) > 0 {
+			nlog.Core().Info("device recovery loaded", "users", len(state.users), "node_id", s.cfg.Panel.NodeID)
+		}
+	}
 
 	// Handshake: get WS config + initial data in one call
 	if err := s.initialSetup(ctx); err != nil {
@@ -1154,8 +1168,13 @@ func (s *Service) pushReportAsync() {
 		return
 	}
 
-	traffic := s.tracker.FlushTraffic()
 	aliveIPs := s.tracker.FlushAliveIPs()
+	if err := s.persistDeviceAttempt(aliveIPs); err != nil {
+		nlog.Core().Error("cannot persist device report; retrying on next tick", "error", err)
+		s.pushActive.Store(false)
+		return
+	}
+	traffic := s.tracker.FlushTraffic()
 	online := s.tracker.CurrentOnline()
 	for uid, ips := range aliveIPs {
 		online[uid] = len(ips)
@@ -1186,7 +1205,7 @@ func (s *Service) pushReportAsync() {
 			s.pushBackoff.onFailure()
 			return
 		}
-		s.tracker.AcknowledgeAliveIPs(aliveIPs)
+		s.confirmDeviceAttempt(aliveIPs)
 		if len(aliveIPs) > 0 {
 			reportLog.Info("device report confirmed", "node_id", nodeID, "machine_id", machineID, "device_report_users", len(aliveIPs), "device_report_ips", activeDevices, "device_offline_users", offlineUsers, "duration_ms", time.Since(started).Milliseconds())
 		}
@@ -1231,8 +1250,13 @@ func (s *Service) pushReportSync() {
 	if !s.sink.SupportsReporting() {
 		return
 	}
-	traffic := s.tracker.FlushTraffic()
 	aliveIPs := s.tracker.FlushAliveIPs()
+	if err := s.persistDeviceAttempt(aliveIPs); err != nil {
+		// Still preserve final traffic accounting; no untracked device send.
+		nlog.Core().Error("cannot persist final device report", "error", err)
+		aliveIPs = nil
+	}
+	traffic := s.tracker.FlushTraffic()
 	online := s.tracker.CurrentOnline()
 	for uid, ips := range aliveIPs {
 		online[uid] = len(ips)
@@ -1249,7 +1273,7 @@ func (s *Service) pushReportSync() {
 			nlog.Core().Warn("failed to push idempotent final report; pending batch retained on disk", "error", err)
 			s.tracker.RestoreAliveIPs(aliveIPs)
 		} else {
-			s.tracker.AcknowledgeAliveIPs(aliveIPs)
+			s.confirmDeviceAttempt(aliveIPs)
 		}
 		return
 	}
@@ -1259,7 +1283,7 @@ func (s *Service) pushReportSync() {
 			s.tracker.RestoreAliveIPs(aliveIPs)
 		}
 	} else {
-		s.tracker.AcknowledgeAliveIPs(aliveIPs)
+		s.confirmDeviceAttempt(aliveIPs)
 	}
 }
 
