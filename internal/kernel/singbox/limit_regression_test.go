@@ -111,3 +111,21 @@ func TestLimitedUDPDoesNotAdvertiseReplaceableIO(t *testing.T) {
 		t.Fatal("limited datagram path must not advertise replaceable I/O")
 	}
 }
+
+func TestRemovedUserClosesOnlyTheirConnections(t *testing.T) {
+	tracker := NewConnTracker(0)
+	tracker.SetUserMap(map[string]int{"removed": 1, "kept": 2})
+	first, second := &testConn{}, &testConn{}
+	a := tracker.RoutedConnection(context.Background(), first, testInboundContext("removed", "192.0.2.1"), nil, nil)
+	b := tracker.RoutedConnection(context.Background(), second, testInboundContext("kept", "192.0.2.2"), nil, nil)
+	defer b.Close()
+	if _, err := a.Write([]byte("abc")); err != nil { t.Fatal(err) }
+	tracker.SetUserMap(map[string]int{"kept": 2})
+	if !first.closed || second.closed { t.Fatal("wrong connection revoked") }
+	if tracker.ActiveCount() != 1 { t.Fatal("revoked connection still counted") }
+	traffic, _, _ := tracker.GetUserTraffic()
+	if traffic[1][1] != 3 { t.Fatal("revocation lost billable bytes") }
+	late := &testConn{}
+	tracker.RoutedConnection(context.Background(), late, testInboundContext("removed", "192.0.2.3"), nil, nil)
+	if !late.closed || tracker.ActiveCount() != 1 { t.Fatal("removed user re-admitted") }
+}

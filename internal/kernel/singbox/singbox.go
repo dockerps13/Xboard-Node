@@ -781,11 +781,11 @@ func (s *SingBox) CloseConnection(_ context.Context, connID string) error {
 
 // CloseUserConnections terminates all connections for a user UUID.
 func (s *SingBox) CloseUserConnections(_ context.Context, uuid string) error {
-	ct := s.connTrackerSafe()
-	if ct == nil {
-		return nil
-	}
-	ct.CloseByUUID(uuid)
+	s.mu.RLock()
+	trackers := append([]*ConnTracker(nil), s.retiredTrackers...)
+	if s.connTracker != nil { trackers = append(trackers, s.connTracker) }
+	s.mu.RUnlock()
+	for _, ct := range trackers { ct.CloseByUUID(uuid) }
 	return nil
 }
 
