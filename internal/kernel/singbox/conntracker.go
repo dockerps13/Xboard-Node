@@ -4,7 +4,6 @@ import (
 	"context"
 	"io"
 	"net"
-	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -233,21 +232,15 @@ func (t *ConnTracker) RoutedConnection(
 	us := t.users[uid]
 	t.usersMu.RUnlock()
 
-	// Device limit gate-keeping
+	limit := 0
 	if dlf := t.deviceLimitFunc.Load(); dlf != nil {
-		if limit, hasLimit := (*dlf)(uuid); hasLimit {
-			if t.checkDeviceGate(us, uid, sourceIP, limit) {
-				nlog.Core().Info("singbox: device limit gate-keep, rejecting connection",
-					"user", uuid, "ip", sourceIP, "limit", limit)
-				conn.Close()
-				return conn
-			}
+		if value, ok := (*dlf)(uuid); ok {
+			limit = value
 		}
 	}
-
-	// Register connection
-	if us != nil {
-		us.addConn(sourceIP)
+	if !t.admitDevice(us, uid, sourceIP, limit) {
+		conn.Close()
+		return conn
 	}
 
 	connID := t.nextID()
@@ -294,20 +287,15 @@ func (t *ConnTracker) RoutedPacketConnection(
 	us := t.users[uid]
 	t.usersMu.RUnlock()
 
-	// Device limit gate-keeping
+	limit := 0
 	if dlf := t.deviceLimitFunc.Load(); dlf != nil {
-		if limit, hasLimit := (*dlf)(uuid); hasLimit {
-			if t.checkDeviceGate(us, uid, sourceIP, limit) {
-				nlog.Core().Info("singbox: device limit gate-keep, rejecting UDP connection",
-					"user", uuid, "ip", sourceIP, "limit", limit)
-				conn.Close()
-				return conn
-			}
+		if value, ok := (*dlf)(uuid); ok {
+			limit = value
 		}
 	}
-
-	if us != nil {
-		us.addConn(sourceIP)
+	if !t.admitDevice(us, uid, sourceIP, limit) {
+		conn.Close()
+		return conn
 	}
 
 	connID := t.nextID()
@@ -329,86 +317,35 @@ func (t *ConnTracker) RoutedPacketConnection(
 	}
 }
 
-// checkDeviceGate rejects connections exceeding device limit.
-// Strategy: merge local + global state when fresh; local-only when stale.
-func (t *ConnTracker) checkDeviceGate(us *userStats, userID int, sourceIP string, limit int) bool {
-	if us == nil || limit <= 0 {
-		return false
-	}
-
-	us.mu.RLock()
-	localIPs := make(map[string]bool, len(us.ips))
-	for ip := range us.ips {
-		localIPs[ip] = true
-	}
-	localCount := len(us.ips)
-	us.mu.RUnlock()
-
-	// Already known locally
-	if localIPs[sourceIP] {
-		return false
-	}
-
-	// Check global state freshness
-	t.globalMu.RLock()
-	globalStale := time.Since(t.globalLastUpdate) > 60*time.Second
-	globalIPs := t.globalDevices[userID]
-	t.globalMu.RUnlock()
-
-	// Stale or missing global state → local-only check
-	if globalStale || globalIPs == nil {
-		if localCount < limit {
-			return false
-		}
-		ipList := make([]string, 0, localCount+1)
-		for ip := range localIPs {
-			ipList = append(ipList, ip)
-		}
-		ipList = append(ipList, sourceIP)
-		sort.Strings(ipList)
-		for i := 0; i < limit && i < len(ipList); i++ {
-			if ipList[i] == sourceIP {
-				return false
-			}
-		}
-		nlog.Core().Debug("device limit: local over limit, rejecting",
-			"userID", userID, "ip", sourceIP, "localIPs", localCount, "limit", limit)
+// admitDevice checks and registers under one per-user lock. A device is
+// a distinct source IP, not a physical device. Existing local connections
+// are retained; a new IP cannot displace an already admitted IP.
+func (t *ConnTracker) admitDevice(us *userStats, userID int, sourceIP string, limit int) bool {
+	if us == nil {
 		return true
 	}
-
-	// Known globally (from other node)
-	if globalIPs[sourceIP] {
-		return false
-	}
-
-	// Merge local + global
-	allIPs := make(map[string]bool)
-	for ip := range localIPs {
-		allIPs[ip] = true
-	}
-	for ip := range globalIPs {
-		allIPs[ip] = true
-	}
-
-	if len(allIPs) < limit {
-		return false
-	}
-
-	// Over limit → lexicographic selection
-	ipList := make([]string, 0, len(allIPs)+1)
-	for ip := range allIPs {
-		ipList = append(ipList, ip)
-	}
-	ipList = append(ipList, sourceIP)
-	sort.Strings(ipList)
-
-	for i := 0; i < limit && i < len(ipList); i++ {
-		if ipList[i] == sourceIP {
+	us.mu.Lock()
+	defer us.mu.Unlock()
+	if limit > 0 && us.ips[sourceIP] == 0 {
+		t.globalMu.RLock()
+		global := t.globalDevices[userID]
+		fresh := time.Since(t.globalLastUpdate) <= 60*time.Second
+		count := len(us.ips)
+		if fresh {
+			for ip := range global {
+				if us.ips[ip] == 0 {
+					count++
+				}
+			}
+		}
+		known := fresh && global[sourceIP]
+		t.globalMu.RUnlock()
+		if !known && count >= limit {
 			return false
 		}
 	}
-	nlog.Core().Debug("device limit: total over limit, rejecting",
-		"userID", userID, "ip", sourceIP, "totalIPs", len(allIPs), "limit", limit)
+	us.connCount++
+	us.ips[sourceIP]++
 	return true
 }
 
@@ -810,14 +747,14 @@ func (c *trackedPacketConn) UnwrapPacketReader() (N.PacketReader, []N.CountFunc)
 	if c.us == nil {
 		return c.PacketConn, nil
 	}
-	return c.PacketConn, []N.CountFunc{c.makeCountFunc(&c.us.download)}
+	return c.PacketConn, []N.CountFunc{c.makeCountFunc(&c.us.upload)}
 }
 
 func (c *trackedPacketConn) UnwrapPacketWriter() (N.PacketWriter, []N.CountFunc) {
 	if c.us == nil {
 		return c.PacketConn, nil
 	}
-	return c.PacketConn, []N.CountFunc{c.makeCountFunc(&c.us.upload)}
+	return c.PacketConn, []N.CountFunc{c.makeCountFunc(&c.us.download)}
 }
 
 func (c *trackedPacketConn) Upstream() any           { return c.PacketConn }
