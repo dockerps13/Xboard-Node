@@ -80,7 +80,7 @@ jobs:
       - name: Build release candidate binaries
         if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[full-ci]')
         run: |
-          make build-linux build-linux-arm64 VERSION=autokernel-rc-${GITHUB_SHA:0:12}
+          make build-linux build-linux-arm64 VERSION=v1.0.0-rc.3-${GITHUB_SHA:0:12}
           mkdir -p dist
           cp xboard-node-linux-amd64 xboard-node-linux-arm64 xbctl-linux-amd64 xbctl-linux-arm64 dist/
           (cd dist && sha256sum xboard-node-linux-* xbctl-linux-* > SHA256SUMS)
@@ -103,7 +103,7 @@ jobs:
   publish-rc3:
     name: Publish verified RC.3 candidate
     needs: test
-    if: github.ref == 'refs/heads/feature/autokernel-stage1' && contains(github.event.head_commit.message, '[publish-rc3]')
+    if: github.event_name == 'push' && github.ref == 'refs/heads/feature/autokernel-stage1' && contains(github.event.head_commit.message, '[publish-rc3]') && contains(github.event.head_commit.message, '[full-ci]')
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -113,8 +113,6 @@ jobs:
         with:
           name: autokernel-release-candidate
           path: dist
-          run-id: 44445768332
-          github-token: ${{ github.token }}
       - name: Publish immutable prerelease assets
         env:
           GH_TOKEN: ${{ github.token }}
@@ -131,4 +129,4 @@ jobs:
             echo "RC.3 already exists; refusing to overwrite"
             exit 1
           fi
-          gh release create v1.0.0-rc.3 SHA256SUMS xboard-node-linux-amd64 xboard-node-linux-arm64 xbctl-linux-amd64 xbctl-linux-arm64 --target 6429c85501b6386cd59a73d6d61438003549353f --prerelease --latest=false --title "V1.0.0 RC.3" --notes "Candidate built and validated in workflow run 44445768332 (commit 6429c85501b6). Includes TCP/UDP limiter fixes, connection revocation and billing recovery protection. Legacy ambiguous reports require manual reconciliation. Real server upgrade, rollback and 24-hour validation are pending. Not a stable release. Embedded build version: autokernel-rc-6429c85501b6."
+          gh release create v1.0.0-rc.3 SHA256SUMS xboard-node-linux-amd64 xboard-node-linux-arm64 xbctl-linux-amd64 xbctl-linux-arm64 --target "$GITHUB_SHA" --prerelease --latest=false --title "V1.0.0 RC.3" --notes "Candidate built and validated in workflow run ${GITHUB_RUN_ID} (commit ${GITHUB_SHA}). Includes TCP/UDP limiter fixes, connection revocation and billing recovery protection. Legacy ambiguous reports require manual reconciliation. Real server upgrade, rollback and 24-hour validation are pending. Not a stable release. Embedded build version: v1.0.0-rc.3-${GITHUB_SHA:0:12}."
