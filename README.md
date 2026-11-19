@@ -14,33 +14,11 @@ Node backend for [Xboard](https://github.com/cedar2025/Xboard). Supports `sing-b
 
 ## Install
 
-### Docker
+This fork's Linux systemd releases are published at [dockerps13/Xboard-Node Releases](https://github.com/dockerps13/Xboard-Node/releases). See the [deployment and operations guide](docs/deployment.md) for pinned version installation, upgrade, backup, rollback and troubleshooting.
 
-```bash
-docker run -d --restart=always --network=host \
-  -e apiHost=https://panel.com -e apiKey=TOKEN -e nodeID=1 \
-  ghcr.io/cedar2025/xboard-node:latest
-```
+**Current release status:** RC.5 is a prerelease, not v1.0.0 stable. The development branch includes additional changes that are not in the published RC.5 binaries. Use an exact release version and matching installer source. Do not use a moving branch or the upstream Docker image as a substitute for a validated release of this fork.
 
-### Docker Compose
-
-```bash
-git clone -b compose --depth 1 https://github.com/cedar2025/xboard-node.git
-cd xboard-node
-vim config/config.yml   # set panel.url / token / node_id
-docker compose up -d
-```
-
-### Installer (Linux systemd)
-
-```bash
-# Node mode
-curl -fsSL https://raw.githubusercontent.com/cedar2025/xboard-node/dev/install.sh | \
-  sudo bash -s -- --mode node --panel https://panel.example.com --token TOKEN --node-id 1
-
-# Machine mode
-curl -fsSL https://raw.githubusercontent.com/cedar2025/xboard-node/dev/install.sh | \
-  sudo bash -s -- --mode machine --panel https://panel.example.com --token TOKEN --machine-id 1
+Docker examples from the upstream project are not release-validated deployment instructions for this fork.
 
 ## xbctl
 
