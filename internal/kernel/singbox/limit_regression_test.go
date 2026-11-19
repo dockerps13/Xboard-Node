@@ -77,3 +77,37 @@ func TestUDPUnwrapAccountingDirections(t *testing.T) {
 		t.Fatalf("incorrect UDP accounting: upload=%d download=%d", stats.upload.Load(), stats.download.Load())
 	}
 }
+
+func TestUDPPacketBudgetLargerThanBurst(t *testing.T) {
+	lim := rate.NewLimiter(1000, 10)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	start := time.Now()
+	if err := waitPacketBudget(ctx, lim, 100); err != nil {
+		t.Fatal(err)
+	}
+	if elapsed := time.Since(start); elapsed < 70*time.Millisecond {
+		t.Fatalf("oversized datagram bypassed limit: %v", elapsed)
+	}
+}
+
+func TestUDPPacketBudgetCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := waitPacketBudget(ctx, rate.NewLimiter(1, 1), 100); err == nil {
+		t.Fatal("canceled packet budget unexpectedly succeeded")
+	}
+}
+
+func TestUDPPacketBudgetInvalidBurst(t *testing.T) {
+	if err := waitPacketBudget(context.Background(), rate.NewLimiter(100, 0), 1); err == nil {
+		t.Fatal("zero burst unexpectedly accepted data")
+	}
+}
+
+func TestLimitedUDPDoesNotAdvertiseReplaceableIO(t *testing.T) {
+	conn := &trackedPacketConn{limiter: rate.NewLimiter(100, 10)}
+	if conn.ReaderReplaceable() || conn.WriterReplaceable() {
+		t.Fatal("limited datagram path must not advertise replaceable I/O")
+	}
+}
