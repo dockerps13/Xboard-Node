@@ -27,6 +27,7 @@ import (
 	"github.com/cedar2025/xboard-node/internal/model"
 	"github.com/cedar2025/xboard-node/internal/monitor"
 	"github.com/cedar2025/xboard-node/internal/nlog"
+	"github.com/cedar2025/xboard-node/internal/panel"
 	"github.com/cedar2025/xboard-node/internal/reportjournal"
 	"github.com/cedar2025/xboard-node/internal/tracker"
 )
@@ -1131,7 +1132,8 @@ func reportTrafficTotals(traffic map[int][2]int64) (up, down uint64) {
 // The local record is for operator reconciliation, never automatic replay.
 func (s *Service) reportLegacy(payload controlplane.ReportPayload) error {
 	if len(payload.Traffic) == 0 {
-		return s.sink.Report(payload)
+		if err := s.sink.Report(payload); err != nil { return err }
+		return s.retryLegacyUnsent(payload)
 	}
 	if s.cfg == nil || s.cfg.Kernel.ConfigDir == "" {
 		s.tracker.RestoreTraffic(payload.Traffic)
@@ -1150,6 +1152,12 @@ func (s *Service) reportLegacy(payload controlplane.ReportPayload) error {
 		return fmt.Errorf("persist legacy report audit: %w", err)
 	}
 	if err := s.sink.Report(payload); err != nil {
+		if panel.IsReportNotSent(err) {
+			if markErr := j.MarkLegacyRetryable(batch.ID); markErr != nil {
+				return fmt.Errorf("legacy batch %s retry transition failed: %w", batch.ID, markErr)
+			}
+			return fmt.Errorf("legacy batch %s proven unsent; queued for safe retry: %w", batch.ID, err)
+		}
 		return fmt.Errorf("legacy batch %s retained for manual reconciliation: %w", batch.ID, err)
 	}
 	// The legacy API reported success. This is NOT an idempotent receipt;
@@ -1157,7 +1165,7 @@ func (s *Service) reportLegacy(payload controlplane.ReportPayload) error {
 	if err := j.RemoveLegacyAudit(batch.ID); err != nil {
 		return fmt.Errorf("legacy batch %s reported success but audit cleanup failed: %w", batch.ID, err)
 	}
-	return nil
+	return s.retryLegacyUnsent(payload)
 }
 
 // pushReportAsync sends the report in a background goroutine so the select
@@ -1578,4 +1586,29 @@ func stringValue(v any) string {
 	default:
 		return ""
 	}
+}
+
+// retryLegacyUnsent drains at most four proven-unsent batches after a fresh
+// report succeeds. No previous ambiguous audit record is replayed.
+func (s *Service) retryLegacyUnsent(payload controlplane.ReportPayload) error {
+	if s.cfg == nil || s.cfg.Kernel.ConfigDir == "" { return nil }
+	j, err := reportjournal.Open(filepath.Join(s.cfg.Kernel.ConfigDir, "unconfirmed-reports"))
+	if err != nil { return err }
+	batches, err := j.LegacyRetryable()
+	if err != nil { return err }
+	if len(batches) > 4 { batches = batches[:4] }
+	for _, batch := range batches {
+		if err := j.BeginLegacyRetry(batch.ID); err != nil { return err }
+		attempt := payload
+		attempt.Traffic = batch.Traffic
+		if err := s.sink.Report(attempt); err != nil {
+			if panel.IsReportNotSent(err) {
+				if markErr := j.MarkLegacyRetryable(batch.ID); markErr != nil { return markErr }
+			}
+			return fmt.Errorf("legacy retry batch %s: %w", batch.ID, err)
+		}
+		if err := j.RemoveLegacyAudit(batch.ID); err != nil { return err }
+		nlog.Core().Info("proven-unsent legacy traffic batch recovered", "batch_id", batch.ID)
+	}
+	return nil
 }

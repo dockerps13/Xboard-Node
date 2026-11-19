@@ -2,6 +2,9 @@ package panel
 
 import (
 	"bytes"
+	"errors"
+	"net"
+	"net/http/httptrace"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -426,6 +429,9 @@ func (c *Client) postJSON(path string, payload map[string]interface{}) error {
 	resp, err := c.doRequest("POST", path, body, "")
 	if err != nil {
 		if path == "/api/v2/server/report" {
+			if IsReportNotSent(err) {
+				return err
+			}
 			return &reportResultError{stage: "transport failure"}
 		}
 		return fmt.Errorf("post %s: %w", path, err)
@@ -505,9 +511,19 @@ func (c *Client) doRequest(method, path string, body []byte, ifNoneMatch string)
 
 	nlog.Core().Debug("panel request", "method", method, "path", path)
 
+	var gotConn atomic.Bool
+	_, standardTransport := c.httpClient.Transport.(*http.Transport)
+	if path == "/api/v2/server/report" && standardTransport {
+		trace := &httptrace.ClientTrace{GotConn: func(httptrace.GotConnInfo) { gotConn.Store(true) }}
+		req = req.WithContext(httptrace.WithClientTrace(req.Context(), trace))
+	}
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		c.apiFailure.Add(1)
+		var op *net.OpError
+		if path == "/api/v2/server/report" && standardTransport && !gotConn.Load() && errors.As(err, &op) && op.Op == "dial" {
+			return nil, &reportNotSentError{}
+		}
 		return nil, safePanelTransportError(err)
 	}
 
@@ -554,4 +570,15 @@ func (c *Client) GetGlobalDevices() (map[int][]string, error) {
 	if result.Users == nil { return nil, fmt.Errorf("global devices response missing users object") }
 	for uid, ips := range result.Users { if uid <= 0 || ips == nil { return nil, fmt.Errorf("invalid global device snapshot entry") } }
 	return result.Users, nil
+}
+
+ // reportNotSentError is emitted only for a standard HTTP transport dial
+// failure before any connection was obtained for this report.
+type reportNotSentError struct{}
+
+func (*reportNotSentError) Error() string { return "report not sent: connection dial failed" }
+
+func IsReportNotSent(err error) bool {
+	var target *reportNotSentError
+	return errors.As(err, &target)
 }

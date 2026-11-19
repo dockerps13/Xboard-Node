@@ -198,3 +198,47 @@ func syncDirectory(path string) error {
 	defer f.Close()
 	return f.Sync()
 }
+
+// MarkLegacyRetryable moves a proven-unsent batch out of ambiguous audit
+// storage. A crash before this transition leaves it ambiguous, never replayed.
+func (j *Journal) MarkLegacyRetryable(id string) error {
+	if !validID(id) { return errors.New("invalid batch ID") }
+	if err := os.Rename(j.path(id), filepath.Join(j.dir, id+".retry")); err != nil { return err }
+	return syncDirectory(j.dir)
+}
+
+// LegacyRetryable returns only batches explicitly classified as unsent.
+// Existing .json audit records are never implicitly promoted.
+func (j *Journal) LegacyRetryable() ([]Batch, error) {
+	entries, err := os.ReadDir(j.dir)
+	if err != nil { return nil, err }
+	var out []Batch
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".retry") { continue }
+		id := strings.TrimSuffix(entry.Name(), ".retry")
+		if !validID(id) { return nil, errors.New("invalid retry batch ID") }
+		raw, err := os.ReadFile(filepath.Join(j.dir, entry.Name()))
+		if err != nil { return nil, err }
+		var b Batch
+		if err := json.Unmarshal(raw, &b); err != nil { return nil, err }
+		if b.ID != id { return nil, errors.New("retry batch ID mismatch") }
+		if _, err := copyTraffic(b.Traffic); err != nil { return nil, err }
+		out = append(out, b)
+	}
+	sort.Slice(out, func(i, k int) bool {
+		if out[i].CreatedAt == out[k].CreatedAt { return out[i].ID < out[k].ID }
+		return out[i].CreatedAt < out[k].CreatedAt
+	})
+	return out, nil
+}
+
+// BeginLegacyRetry makes a retry ambiguous durably BEFORE sending it.
+// If killed after this point, operators reconcile rather than replay.
+func (j *Journal) BeginLegacyRetry(id string) error {
+	if !validID(id) { return errors.New("invalid batch ID") }
+	if _, err := os.Lstat(j.path(id)); err == nil {
+		return errors.New("ambiguous batch already exists")
+	} else if !os.IsNotExist(err) { return err }
+	if err := os.Rename(filepath.Join(j.dir, id+".retry"), j.path(id)); err != nil { return err }
+	return syncDirectory(j.dir)
+}
