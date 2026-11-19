@@ -931,7 +931,29 @@ func writeRootConfig(path string, root *config.RootConfig) error {
 	if err != nil {
 		return fmt.Errorf("marshal config: %w", err)
 	}
-	return os.WriteFile(path, data, 0o600)
+	return writePrivateFile(path, data)
+}
+
+// Write sensitive state using a private temporary file and atomic rename.
+// Existing permissive destination modes cannot leak the replacement contents.
+func writePrivateFile(path string, data []byte) error {
+	f, err := os.CreateTemp(filepath.Dir(path), ".private-*")
+	if err != nil {
+		return err
+	}
+	name := f.Name()
+	defer os.Remove(name)
+	defer f.Close()
+	if _, err := f.Write(data); err != nil {
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	return os.Rename(name, path)
 }
 
 func pruneCredentialKeys(path string, removed []config.Config) error {
@@ -973,7 +995,7 @@ func pruneCredentialKeys(path string, removed []config.Config) error {
 	if output != "" {
 		output += "\n"
 	}
-	return os.WriteFile(path, []byte(output), 0o600)
+	return writePrivateFile(path, []byte(output))
 }
 
 func writeInstallMeta(path string, root *config.RootConfig) error {
@@ -1313,6 +1335,9 @@ func runConfigInit(args []string) error {
 	if panelURL == "" {
 		return errors.New("--panel-url is required")
 	}
+	if strings.ContainsAny(token, "\r\n\x00") {
+		return errors.New("token contains prohibited control characters")
+	}
 	if mode == "node" && nodeID <= 0 {
 		return errors.New("--node-id is required for node mode")
 	}
@@ -1373,10 +1398,12 @@ func runConfigInit(args []string) error {
 	root := &config.RootConfig{}
 	hasExisting := false
 	if configIn != "" {
-		if loaded, loadErr := loadWritableRootConfig(configIn); loadErr == nil {
-			root = loaded
-			hasExisting = len(root.Instances) > 0 || root.Config.Panel.URL != "" || root.Config.Kernel.Type != ""
+		loaded, loadErr := loadWritableRootConfig(configIn)
+		if loadErr != nil {
+			return errors.New("cannot read existing configuration; refusing to replace it")
 		}
+		root = loaded
+		hasExisting = len(root.Instances) > 0 || root.Config.Panel.URL != "" || root.Config.Kernel.Type != ""
 	}
 
 	// Normalise existing instance IDs so dedup works correctly.
@@ -1416,6 +1443,13 @@ func runConfigInit(args []string) error {
 	}
 	root.Instances = instances
 
+	// Validate the credential source before changing the configuration.
+	if credentialsIn != "" {
+		if _, err := os.ReadFile(credentialsIn); err != nil {
+			return fmt.Errorf("read existing credentials: %w", err)
+		}
+	}
+
 	// Write config.
 	if configOut == "" {
 		configOut = configIn
@@ -1454,6 +1488,9 @@ func mergeCredentials(srcPath, dstPath, key, value string) error {
 	var order []string
 	if srcPath != "" {
 		data, err := os.ReadFile(srcPath)
+		if err != nil {
+			return fmt.Errorf("read existing credentials: %w", err)
+		}
 		if err == nil {
 			for _, raw := range strings.Split(string(data), "\n") {
 				line := strings.TrimSpace(raw)
@@ -1477,7 +1514,7 @@ func mergeCredentials(srcPath, dstPath, key, value string) error {
 	for _, k := range order {
 		fmt.Fprintf(&buf, "%s=%s\n", k, entries[k])
 	}
-	return os.WriteFile(dstPath, []byte(buf.String()), 0o600)
+	return writePrivateFile(dstPath, []byte(buf.String()))
 }
 
 // writeInstallMetaVersioned writes install-meta.json with an explicit

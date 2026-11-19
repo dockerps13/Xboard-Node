@@ -443,7 +443,7 @@ validate_release_version() {
 
 ensure_dirs() {
     mkdir -p "$INSTALL_ROOT" "$BACKUP_DIR"
-    chmod 700 "$INSTALL_ROOT"
+    chmod 700 "$INSTALL_ROOT" "$BACKUP_DIR"
 }
 
 validate_positive_int() {
@@ -688,10 +688,10 @@ backup_existing_state() {
         cp "$CLI_PATH" "$BACKUP_PATH/xbctl"
     fi
     if [ -f "$CONFIG_FILE" ]; then
-        cp "$CONFIG_FILE" "$BACKUP_PATH/config.yml"
+        install -m 600 "$CONFIG_FILE" "$BACKUP_PATH/config.yml"
     fi
     if [ -f "$CREDENTIALS_FILE" ]; then
-        cp "$CREDENTIALS_FILE" "$BACKUP_PATH/credentials.env"
+        install -m 600 "$CREDENTIALS_FILE" "$BACKUP_PATH/credentials.env"
     fi
     if [ -f "$INSTALL_META" ]; then
         cp "$INSTALL_META" "$BACKUP_PATH/install-meta.json"
@@ -920,6 +920,7 @@ main() {
     esac
 
     check_root
+    umask 077
     detect_arch
     detect_os
     ensure_systemd
