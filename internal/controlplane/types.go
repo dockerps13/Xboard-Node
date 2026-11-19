@@ -35,6 +35,7 @@ type APIMetrics struct {
 }
 
 type Bootstrap struct {
+	DeviceUsers map[int][]string
 	IdempotentReports bool // panel explicitly confirms atomic report-ID deduplication
 	PushInterval int
 	PullInterval int
@@ -45,6 +46,7 @@ type Bootstrap struct {
 }
 
 type Snapshot struct {
+	DeviceUsers map[int][]string
 	Config *model.NodeSpec
 	Users  []model.UserSpec
 }

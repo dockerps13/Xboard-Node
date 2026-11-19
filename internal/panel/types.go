@@ -63,6 +63,7 @@ type Settings struct {
 	// Set only when the panel stores report IDs durably and applies charges
 	// atomically at most once. Legacy panels omit this field.
 	IdempotentReports bool `json:"idempotent_reports,omitempty"`
+	GlobalDeviceSnapshots bool `json:"global_device_snapshots,omitempty"`
 }
 
 // MachineNode is a single entry returned by GET /api/v2/server/machine/nodes.

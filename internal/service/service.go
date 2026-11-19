@@ -88,6 +88,7 @@ type Service struct {
 
 // pullResult carries the outcome of an async pullViaAPI back to the main goroutine.
 type pullResult struct {
+	deviceUsers map[int][]string
 	config      *model.NodeSpec
 	users       []model.UserSpec
 	configHash  string
@@ -366,6 +367,9 @@ func (s *Service) initialSetup(ctx context.Context) error {
 	s.applyRemoteOverrides(ctx, bootstrap.Config)
 	if !s.startKernel(bootstrap.Config, bootstrap.Users) {
 		return fmt.Errorf("start kernel")
+	}
+	if bootstrap.DeviceUsers != nil && (s.wsClient == nil || !s.wsClient.IsConnected()) {
+		s.kernel.UpdateGlobalDevices(bootstrap.DeviceUsers)
 	}
 	s.markMailboxReadyAndDrain(ctx)
 	return nil
@@ -674,7 +678,7 @@ func (s *Service) pullViaAPIAsync(ctx context.Context) {
 		}
 		s.pullBackoff.onSuccess()
 
-		result := pullResult{certChanged: certChanged}
+		result := pullResult{certChanged: certChanged, deviceUsers: snapshot.DeviceUsers}
 		if snapshot.Config != nil {
 			result.config = snapshot.Config
 			result.configHash = computeConfigHash(snapshot.Config)
@@ -737,6 +741,10 @@ func (s *Service) applyPullResult(ctx context.Context, result pullResult) {
 
 	if configChanged {
 		s.applyChanges(ctx, true, false)
+	}
+	// A late REST result must not overwrite a connected WS snapshot.
+	if result.deviceUsers != nil && (s.wsClient == nil || !s.wsClient.IsConnected()) {
+		s.kernel.UpdateGlobalDevices(result.deviceUsers)
 	}
 }
 

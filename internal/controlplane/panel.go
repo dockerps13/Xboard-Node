@@ -16,6 +16,7 @@ type PanelControlPlane struct {
 	wsCfg  config.WSConfig
 	kcfg   config.KernelConfig
 	client *panel.Client
+	globalDeviceSnapshots bool
 }
 
 type panelPushClient struct {
@@ -42,6 +43,7 @@ func (p *PanelControlPlane) Initial(ctx context.Context, metricsFn func() map[st
 		return Bootstrap{}, fmt.Errorf("handshake: %w", err)
 	}
 
+	p.globalDeviceSnapshots = hs.Settings.GlobalDeviceSnapshots
 	bootstrap := Bootstrap{PushInterval: hs.Settings.PushInterval, PullInterval: hs.Settings.PullInterval, IdempotentReports: hs.Settings.IdempotentReports}
 	if hs.WebSocket.Enabled && hs.WebSocket.WSURL != "" {
 		bootstrap.Push = p.newPushClient(metricsFn, events, statuses, hs.WebSocket.WSURL)
@@ -65,6 +67,9 @@ func (p *PanelControlPlane) Initial(ctx context.Context, metricsFn func() map[st
 		return Bootstrap{}, fmt.Errorf("initial config normalize: %w", err)
 	}
 	bootstrap.Users = model.UserSpecsFromPanel(users)
+	if p.globalDeviceSnapshots {
+		if devices, err := p.client.GetGlobalDevices(); err == nil { bootstrap.DeviceUsers = devices } else { nlog.Core().Warn("initial global device snapshot failed", "error", err) }
+	}
 	return bootstrap, nil
 }
 
@@ -86,7 +91,11 @@ func (p *PanelControlPlane) Poll(ctx context.Context) (Snapshot, error) {
 	if err != nil {
 		return Snapshot{}, fmt.Errorf("poll config normalize: %w", err)
 	}
-	return Snapshot{Config: nodeSpec, Users: model.UserSpecsFromPanel(users)}, nil
+	snapshot := Snapshot{Config: nodeSpec, Users: model.UserSpecsFromPanel(users)}
+	if p.globalDeviceSnapshots {
+		if devices, err := p.client.GetGlobalDevices(); err == nil { snapshot.DeviceUsers = devices } else { nlog.Core().Warn("global device snapshot failed", "error", err) }
+	}
+	return snapshot, nil
 }
 
 func (p *PanelControlPlane) Discover(ctx context.Context, metricsFn func() map[string]interface{}, events chan<- Event, statuses chan<- StatusChange) (PushClient, error) {

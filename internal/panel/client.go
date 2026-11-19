@@ -546,3 +546,17 @@ func (c *Client) SnapshotMetrics() APIMetrics {
 		Failure: c.apiFailure.Load(),
 	}
 }
+
+// GetGlobalDevices reads a full node-authorized snapshot from an opt-in panel.
+// A missing or null users object is invalid; an empty object clears the snapshot.
+func (c *Client) GetGlobalDevices() (map[int][]string, error) {
+	resp, err := c.doRequest("POST", "/api/v2/server/devices", nil, "")
+	if err != nil { return nil, err }
+	defer drainAndClose(resp.Body)
+	if resp.StatusCode != http.StatusOK { return nil, fmt.Errorf("global devices HTTP %d", resp.StatusCode) }
+	var result struct { Users map[int][]string `json:"users"` }
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 16<<20)).Decode(&result); err != nil { return nil, err }
+	if result.Users == nil { return nil, fmt.Errorf("global devices response missing users object") }
+	for uid, ips := range result.Users { if uid <= 0 || ips == nil { return nil, fmt.Errorf("invalid global device snapshot entry") } }
+	return result.Users, nil
+}

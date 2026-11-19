@@ -16,6 +16,7 @@ import (
 // PushClient supplied by the machine WS mux.
 type MachinePanelControlPlane struct {
 	client *panel.Client
+	globalDeviceSnapshots bool
 	kcfg   config.KernelConfig
 	push   PushClient // virtual push client from WS mux (may be nil)
 
@@ -73,6 +74,7 @@ func (p *MachinePanelControlPlane) Initial(
 		bootstrap.PushInterval = hs.Settings.PushInterval
 		bootstrap.PullInterval = hs.Settings.PullInterval
 		bootstrap.IdempotentReports = hs.Settings.IdempotentReports
+		p.globalDeviceSnapshots = hs.Settings.GlobalDeviceSnapshots
 	}
 
 	configSnapshot := p.initialConfig
@@ -96,6 +98,9 @@ func (p *MachinePanelControlPlane) Initial(
 		return Bootstrap{}, fmt.Errorf("machine initial config normalize: %w", err)
 	}
 	bootstrap.Users = model.UserSpecsFromPanel(users)
+	if p.globalDeviceSnapshots {
+		if devices, err := p.client.GetGlobalDevices(); err == nil { bootstrap.DeviceUsers = devices } else { nlog.Core().Warn("initial global device snapshot failed", "error", err) }
+	}
 
 	// Register mailbox access after the initial snapshot is prepared, so the
 	// Service can start the kernel immediately and only then drain coalesced WS
@@ -128,7 +133,11 @@ func (p *MachinePanelControlPlane) Poll(ctx context.Context) (Snapshot, error) {
 	if err != nil {
 		return Snapshot{}, fmt.Errorf("machine poll normalize: %w", err)
 	}
-	return Snapshot{Config: nodeSpec, Users: model.UserSpecsFromPanel(users)}, nil
+	snapshot := Snapshot{Config: nodeSpec, Users: model.UserSpecsFromPanel(users)}
+	if p.globalDeviceSnapshots {
+		if devices, err := p.client.GetGlobalDevices(); err == nil { snapshot.DeviceUsers = devices } else { nlog.Core().Warn("global device snapshot failed", "error", err) }
+	}
+	return snapshot, nil
 }
 
 func (p *MachinePanelControlPlane) Discover(
