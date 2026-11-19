@@ -142,6 +142,7 @@ func (c *Client) ReportWithBatchID(batchID string, traffic map[int][2]int64, ali
 	if len(alive) > 0 {
 		a := aliveMapPool.Get().(map[string][]string)
 		for uid, ips := range alive {
+			if ips == nil { ips = []string{} }
 			a[strconv.Itoa(uid)] = ips
 		}
 		payload["alive"] = a

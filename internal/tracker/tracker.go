@@ -1,8 +1,7 @@
 package tracker
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
+	"net/netip"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -49,17 +48,18 @@ type Tracker struct {
 	// Readers load this pointer without any lock.
 	live atomic.Pointer[snapshot]
 
-	// Force a fresh snapshot after a failed report.
-	aliveDirty bool
-
-	// lastAliveIPsHash detects changes to avoid duplicate reports.
-	lastAliveIPsHash string
+	// Separate HTTP and WS delivery state. HTTP has a receipt; WS is
+	// best effort and must never consume HTTP's pending offline notices.
+	reportedAlive map[int]struct{}
+	wsAlive map[int]struct{}
 }
 
 func New() *Tracker {
 	t := &Tracker{
 		lastSeen:       make(map[int][2]int64),
 		pendingTraffic: make(map[int][2]int64),
+		reportedAlive: make(map[int]struct{}),
+		wsAlive: make(map[int]struct{}),
 	}
 	// Publish initial empty snapshot.
 	t.live.Store(&snapshot{
@@ -111,16 +111,28 @@ func (t *Tracker) Process(
 		}
 	}
 
-	// Compute online from alive IPs.
+	// Canonicalize addresses before counting and publishing.
+	normalized := make(map[int]map[string]bool, len(kernelAliveIPs))
 	online := make(map[int]int, len(kernelAliveIPs))
 	for uid, ips := range kernelAliveIPs {
-		online[uid] = len(ips)
+		set := make(map[string]bool, len(ips))
+		for ip := range ips {
+			if addr, err := netip.ParseAddr(ip); err == nil {
+				set[addr.WithZone("").Unmap().String()] = true
+			} else if ap, err := netip.ParseAddrPort(ip); err == nil {
+				set[ap.Addr().WithZone("").Unmap().String()] = true
+			}
+		}
+		if len(set) > 0 {
+			normalized[uid] = set
+			online[uid] = len(set)
+		}
 	}
 
 	// Publish new snapshot (readers will see this atomically).
 	t.live.Store(&snapshot{
 		traffic:   copyTrafficMap(t.pendingTraffic),
-		aliveIPs:  kernelAliveIPs, // kernel provides fresh copy each tick
+		aliveIPs:  normalized,
 		online:    online,
 		connCount: connCount,
 		inSpeed:   cycleIn,
@@ -157,68 +169,50 @@ func (t *Tracker) HasTraffic() bool {
 	return len(t.pendingTraffic) > 0
 }
 
-// FlushAliveIPs returns per-user alive IPs.
-// Returns an owned snapshot, or nil if unchanged.
+// FlushAliveIPs prepares a full HTTP refresh plus explicit per-user
+// offline notices. Only an acknowledged report may forget an offline user.
 func (t *Tracker) FlushAliveIPs() map[int][]string {
-	s := t.live.Load()
-
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	return t.prepareAlive(t.reportedAlive)
+}
 
-	// Calculate hash of current aliveIPs
-	currentHash := calcAliveIPsHash(s.aliveIPs)
-
-	// If no changes, return nil to avoid duplicate reporting
-	if !t.aliveDirty && currentHash == t.lastAliveIPsHash {
-		return nil
-	}
-
-	t.lastAliveIPsHash = currentHash
-
-	t.aliveDirty = false
-	// Each caller owns its output; HTTP and WebSocket may serialize it
-	// concurrently with subsequent flushes.
-	out := make(map[int][]string, len(s.aliveIPs))
-	for uid, ips := range s.aliveIPs {
-		list := make([]string, 0, len(ips))
-		for ip := range ips { list = append(list, ip) }
-		out[uid] = list
+// FlushWSAliveIPs is independent of HTTP receipts. The HTTP refresh
+// guarantees recovery if a best-effort WS notification is dropped.
+func (t *Tracker) FlushWSAliveIPs() map[int][]string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	out := t.prepareAlive(t.wsAlive)
+	for uid, ips := range out {
+		if len(ips) == 0 { delete(t.wsAlive, uid) }
 	}
 	return out
 }
 
-// calcAliveIPsHash computes a deterministic hash for change detection.
-func calcAliveIPsHash(aliveIPs map[int]map[string]bool) string {
-	if len(aliveIPs) == 0 {
-		return ""
+func (t *Tracker) prepareAlive(known map[int]struct{}) map[int][]string {
+	s := t.live.Load()
+	out := make(map[int][]string, len(s.aliveIPs)+len(known))
+	for uid := range known {
+		out[uid] = []string{}
 	}
-
-	h := sha256.New()
-
-	// Sort user IDs for consistent hashing
-	userIDs := make([]int, 0, len(aliveIPs))
-	for uid := range aliveIPs {
-		userIDs = append(userIDs, uid)
+	for uid, ips := range s.aliveIPs {
+		list := make([]string, 0, len(ips))
+		for ip := range ips { list = append(list, ip) }
+		sort.Strings(list)
+		out[uid] = list
+		known[uid] = struct{}{}
 	}
-	sort.Ints(userIDs)
+	return out
+}
 
-	for _, uid := range userIDs {
-		ips := aliveIPs[uid]
-		// Sort IPs for consistent hashing
-		ipList := make([]string, 0, len(ips))
-		for ip := range ips {
-			ipList = append(ipList, ip)
-		}
-		sort.Strings(ipList)
-
-		// Write user ID and IPs to hash
-		h.Write([]byte{byte(uid >> 24), byte(uid >> 16), byte(uid >> 8), byte(uid)})
-		for _, ip := range ipList {
-			h.Write([]byte(ip))
-		}
+// AcknowledgeAliveIPs clears offline notices only after a successful HTTP
+// receipt. A later reconnect will be included in the next full refresh.
+func (t *Tracker) AcknowledgeAliveIPs(sent map[int][]string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for uid, ips := range sent {
+		if len(ips) == 0 { delete(t.reportedAlive, uid) }
 	}
-
-	return hex.EncodeToString(h.Sum(nil))
 }
 
 // CurrentOnline returns a snapshot copy of user_id → device count (distinct IPs).
@@ -232,12 +226,12 @@ func (t *Tracker) CurrentOnline() map[int]int {
 	return cp
 }
 
-// RestoreAliveIPs marks the latest snapshot for retry rather than merging
-// stale disconnected IPs into the current device state.
-func (t *Tracker) RestoreAliveIPs(_ map[int][]string) {
+// RestoreAliveIPs retains the identities of potentially delivered reports.
+// Never restore old addresses; the next report uses the latest snapshot.
+func (t *Tracker) RestoreAliveIPs(data map[int][]string) {
 	t.mu.Lock()
-	t.aliveDirty = true
-	t.mu.Unlock()
+	defer t.mu.Unlock()
+	for uid := range data { t.reportedAlive[uid] = struct{}{} }
 }
 
 // LogStats logs current tracking statistics.

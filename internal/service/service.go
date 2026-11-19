@@ -1144,6 +1144,9 @@ func (s *Service) pushReportAsync() {
 	traffic := s.tracker.FlushTraffic()
 	aliveIPs := s.tracker.FlushAliveIPs()
 	online := s.tracker.CurrentOnline()
+	for uid, ips := range aliveIPs {
+		online[uid] = len(ips)
+	}
 	status := monitor.Collect()
 	metrics := s.buildMetrics(status)
 	metrics["kernel_status"] = s.kernel.IsRunning()
@@ -1168,14 +1171,15 @@ func (s *Service) pushReportAsync() {
 			s.pushBackoff.onFailure()
 			return
 		}
+		s.tracker.AcknowledgeAliveIPs(aliveIPs)
 		s.pushBackoff.onSuccess()
 		if s.reportJournal != nil {
 			// A successful journal tick can include older batches and leave
 			// newer batches pending; do not label freshly collected bytes as sent.
-			reportLog.Info("journal report tick succeeded", "node_id", nodeID, "machine_id", machineID, "online", len(online))
+			reportLog.Info("journal report tick succeeded", "node_id", nodeID, "machine_id", machineID, "online", len(s.tracker.CurrentOnline()))
 		} else {
 			up, down := reportTrafficTotals(traffic)
-			reportLog.Info("report pushed", "node_id", nodeID, "machine_id", machineID, "traffic_users", len(traffic), "online", len(online), "upload_bytes", up, "download_bytes", down)
+			reportLog.Info("report pushed", "node_id", nodeID, "machine_id", machineID, "traffic_users", len(traffic), "online", len(s.tracker.CurrentOnline()), "upload_bytes", up, "download_bytes", down)
 		}
 	}()
 }
@@ -1212,6 +1216,9 @@ func (s *Service) pushReportSync() {
 	traffic := s.tracker.FlushTraffic()
 	aliveIPs := s.tracker.FlushAliveIPs()
 	online := s.tracker.CurrentOnline()
+	for uid, ips := range aliveIPs {
+		online[uid] = len(ips)
+	}
 	status := monitor.Collect()
 	metrics := s.buildMetrics(status)
 	metrics["kernel_status"] = s.kernel.IsRunning()
@@ -1371,10 +1378,9 @@ func (s *Service) sendDeviceBatch() {
 		return
 	}
 
-	devices := s.tracker.FlushAliveIPs()
-	// FlushAliveIPs returns nil if no changes since last flush
-	if devices == nil {
-		nlog.Core().Debug("device snapshot unchanged, skipping")
+	devices := s.tracker.FlushWSAliveIPs()
+	if len(devices) == 0 {
+		nlog.Core().Debug("no device snapshot to send")
 		return
 	}
 	s.sink.ReportDevices(s.wsClient, devices)
