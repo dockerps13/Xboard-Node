@@ -2,6 +2,7 @@ package singbox
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net"
 	"sync"
@@ -558,33 +559,35 @@ func (c *trackedConn) Read(b []byte) (int, error) {
 }
 
 func (c *trackedConn) Write(b []byte) (int, error) {
-	// Apply rate limiting before write
-	if c.limiter != nil {
-		if burst := c.limiter.Burst(); len(b) > burst {
-			b = b[:burst]
-		}
-		// Non-blocking check first
-		if !c.limiter.AllowN(time.Now(), len(b)) {
-			resv := c.limiter.ReserveN(time.Now(), len(b))
-			if delay := resv.Delay(); delay > 0 {
-				timer := time.NewTimer(delay)
-				defer timer.Stop()
-				select {
-				case <-timer.C:
-					// Tokens available
-				case <-c.ctx.Done():
-					resv.Cancel()
-					return 0, c.ctx.Err()
-				}
+	// net.Conn.Write must not return a short successful write just because
+	// the limiter burst is smaller than the caller's buffer.
+	total := 0
+	for len(b) > 0 {
+		n := len(b)
+		if c.limiter != nil {
+			if burst := c.limiter.Burst(); burst <= 0 {
+				return total, fmt.Errorf("invalid rate limiter burst")
+			} else if n > burst {
+				n = burst
+			}
+			if err := c.limiter.WaitN(c.ctx, n); err != nil {
+				return total, err
 			}
 		}
+		written, err := c.Conn.Write(b[:n])
+		total += written
+		if written > 0 && c.us != nil {
+			c.us.download.Add(int64(written))
+		}
+		if err != nil {
+			return total, err
+		}
+		if written != n {
+			return total, io.ErrShortWrite
+		}
+		b = b[written:]
 	}
-
-	n, err := c.Conn.Write(b)
-	if n > 0 && c.us != nil {
-		c.us.download.Add(int64(n)) // 向入站写入 = 用户下载
-	}
-	return n, err
+	return total, nil
 }
 
 func (c *trackedConn) Close() error {
