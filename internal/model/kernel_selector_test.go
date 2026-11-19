@@ -31,6 +31,7 @@ func TestResolveKernelForNode(t *testing.T) {
 		{"ss http obfs supported", NodeSpec{Protocol: "shadowsocks", Plugin: "obfs", PluginOpt: "obfs=http;obfs-host=www.bing.com"}, "singbox", "singbox", false},
 		{"ss obfs forces singbox", NodeSpec{Protocol: "shadowsocks", Plugin: "obfs", PluginOpt: "obfs=http"}, "xray", "singbox", false},
 		{"ss tls obfs rejected", NodeSpec{Protocol: "shadowsocks", Plugin: "obfs", PluginOpt: "obfs=tls"}, "singbox", "", true},
+		{"ss obfs conflicts with xhttp", NodeSpec{Protocol: "shadowsocks", Plugin: "obfs", PluginOpt: "obfs=http", Network: "xhttp"}, "xray", "", true},
 		{"plain ss", NodeSpec{Protocol: "shadowsocks"}, "singbox", "singbox", false},
 		{"vless decryption", NodeSpec{Protocol: "vless", Decryption: "mlkem768x25519plus"}, "singbox", "xray", false},
 		{"unknown protocol", NodeSpec{Protocol: "unknown"}, "singbox", "", true},
@@ -65,5 +66,20 @@ func TestParseSimpleObfs(t *testing.T) {
 	}
 	if enabled, _, err := ParseSimpleObfs("obfs", "obfs=tls"); enabled || err == nil {
 		t.Fatalf("TLS obfs must remain unsupported until implemented")
+	}
+}
+
+// Both explicit kernel configuration and automatic selection must reject the
+// same unsupported combination.
+func TestValidateNodeSpecRejectsUnsupportedXHTTPProtocol(t *testing.T) {
+	for _, protocol := range []string{"shadowsocks", "socks", "http", "hysteria2"} {
+		for _, network := range []string{"xhttp", "splithttp"} {
+			for _, kernelType := range []string{"singbox", "xray"} {
+				node := &NodeSpec{Protocol: protocol, Network: network}
+				if err := ValidateNodeSpec(node, config.KernelConfig{Type: kernelType}); err == nil {
+					t.Fatalf("accepted %s/%s on %s", protocol, network, kernelType)
+				}
+			}
+		}
 	}
 }

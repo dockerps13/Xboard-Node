@@ -929,3 +929,15 @@ func TestBuildInbound_NaiveUsesRaceFreeTCPByDefault(t *testing.T) {
 	assertMapValue(t, inbound, "type", "naive")
 	assertMapValue(t, inbound, "network", "tcp")
 }
+
+// The h2 transport alias must be normalized even without optional settings.
+func TestApplyTransportH2WithoutSettings(t *testing.T) {
+	base := M{}
+	nc := &panel.NodeConfig{Network: "h2"}
+	applyTransport(base, testNodeSpec(nc))
+	transport, ok := base["transport"].(M)
+	if !ok {
+		t.Fatal("missing transport")
+	}
+	assertMapValue(t, transport, "type", "http")
+}

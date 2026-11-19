@@ -24,6 +24,9 @@ func ResolveKernelForNode(n *NodeSpec, preferred string) (string, error) {
 	if preferred != "singbox" && preferred != "xray" {
 		return "", fmt.Errorf("unrecognized kernel %q", preferred)
 	}
+	if err := validateProtocolTransport(protocol, network); err != nil {
+		return "", err
+	}
 	if protocol == "shadowsocks" && strings.TrimSpace(n.Plugin) != "" {
 		if _, _, err := ParseSimpleObfs(n.Plugin, n.PluginOpt); err != nil {
 			return "", err

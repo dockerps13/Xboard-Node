@@ -36,6 +36,9 @@ func ValidateNodeSpec(n *NodeSpec, kcfg config.KernelConfig) error {
 	if err := ValidateCustomRouteRules(n.CustomRouteRules, kernelType, availableTags); err != nil {
 		return fmt.Errorf("validate custom route rules: %w", err)
 	}
+	if err := validateProtocolTransport(n.Protocol, n.Network); err != nil {
+		return err
+	}
 	if err := validateTransportKernel(n.Network, kernelType); err != nil {
 		return err
 	}
@@ -47,6 +50,22 @@ func ValidateNodeSpec(n *NodeSpec, kcfg config.KernelConfig) error {
 		}
 		if kernelType != "singbox" {
 			return fmt.Errorf("Shadowsocks simple-obfs HTTP adapter requires sing-box kernel, got %s", kernelType)
+		}
+	}
+	return nil
+}
+
+// Reject XHTTP for inbounds that do not implement that transport, even
+// when another feature (such as SS obfs) would otherwise choose a kernel.
+func validateProtocolTransport(protocol, network string) error {
+	protocol = strings.ToLower(strings.TrimSpace(protocol))
+	network = strings.ToLower(strings.TrimSpace(network))
+	if network == "xhttp" || network == "splithttp" {
+		switch protocol {
+		case "vmess", "vless", "trojan":
+			return nil
+		default:
+			return fmt.Errorf("unsupported transport %q for %s", network, protocol)
 		}
 	}
 	return nil

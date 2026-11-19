@@ -815,6 +815,9 @@ func applyTransport(base M, nc *model.NodeSpec) {
 	}
 
 	transport := M{"type": nc.Network}
+	if nc.Network == "h2" {
+		transport["type"] = "http"
+	}
 
 	if nc.NetworkSettings != nil {
 		switch nc.Network {
