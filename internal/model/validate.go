@@ -42,6 +42,13 @@ func ValidateNodeSpec(n *NodeSpec, kcfg config.KernelConfig) error {
 	if err := validateTransportKernel(n.Network, kernelType); err != nil {
 		return err
 	}
+	header, err := TCPHeaderType(n)
+	if err != nil {
+		return err
+	}
+	if kernelType != "xray" && (header == "http" || (strings.EqualFold(n.Protocol, "socks") && n.TLS == 1)) {
+		return fmt.Errorf("TCP HTTP header and SOCKS TLS require xray kernel")
+	}
 	// Neither embedded SS inbound implements SIP003 server-side plugins.
 	// Reject explicitly in every mode, not just machine auto-selection.
 	if strings.EqualFold(strings.TrimSpace(n.Protocol), "shadowsocks") && strings.TrimSpace(n.Plugin) != "" {

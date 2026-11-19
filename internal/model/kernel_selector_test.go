@@ -83,3 +83,18 @@ func TestValidateNodeSpecRejectsUnsupportedXHTTPProtocol(t *testing.T) {
 		}
 	}
 }
+
+func TestSelectTCPHeaderAndSocksTLS(t *testing.T) {
+	for _, node := range []NodeSpec{
+		{Protocol: "vmess", Network: "tcp", NetworkSettings: map[string]any{"header": map[string]any{"type": "http"}}},
+		{Protocol: "socks", TLS: 1},
+	} {
+		got, err := ResolveKernelForNode(&node, "singbox")
+		if err != nil || got != "xray" {
+			t.Fatalf("kernel = %q, error = %v", got, err)
+		}
+		if ValidateNodeSpec(&node, config.KernelConfig{Type: "singbox"}) == nil {
+			t.Fatal("unsupported explicit kernel accepted")
+		}
+	}
+}

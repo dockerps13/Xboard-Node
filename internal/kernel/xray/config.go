@@ -224,7 +224,7 @@ func buildInbound(nc *model.NodeSpec, users []model.UserSpec, tc kernel.TLSCert)
 	case "shadowsocks":
 		return buildShadowsocks(base, nc, users)
 	case "socks":
-		return buildSocks(base, users)
+		return buildSocks(base, nc, users, tc)
 	case "http":
 		return buildHTTP(base, nc, users, tc)
 	case "hysteria":
@@ -362,7 +362,7 @@ func buildShadowsocks(base M, nc *model.NodeSpec, users []model.UserSpec) M {
 	return base
 }
 
-func buildSocks(base M, users []model.UserSpec) M {
+func buildSocks(base M, nc *model.NodeSpec, users []model.UserSpec, tc kernel.TLSCert) M {
 	base["protocol"] = "socks"
 	accounts := make([]M, 0, len(users))
 	for _, u := range users {
@@ -375,7 +375,10 @@ func buildSocks(base M, users []model.UserSpec) M {
 	base["settings"] = M{
 		"auth":     "password",
 		"accounts": accounts,
-		"udp":      true,
+		"udp":      nc.TLS != 1,
+	}
+	if nc.TLS == 1 {
+		applyStreamSettings(base, nc, tc)
 	}
 	return base
 }
@@ -555,7 +558,9 @@ func applyStreamSettings(base M, nc *model.NodeSpec, tc kernel.TLSCert) {
 		ss["xhttpSettings"] = xhttpSettings
 
 	case "tcp":
-		// default, no extra settings
+		if kind, err := model.TCPHeaderType(nc); err == nil && kind == "http" {
+			ss["tcpSettings"] = M{"header": nc.NetworkSettings["header"]}
+		}
 	}
 
 	// TLS

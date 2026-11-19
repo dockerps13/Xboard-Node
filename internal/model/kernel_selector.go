@@ -27,6 +27,13 @@ func ResolveKernelForNode(n *NodeSpec, preferred string) (string, error) {
 	if err := validateProtocolTransport(protocol, network); err != nil {
 		return "", err
 	}
+	header, err := TCPHeaderType(n)
+	if err != nil {
+		return "", err
+	}
+	if header == "http" || (protocol == "socks" && n.TLS == 1) {
+		return "xray", nil
+	}
 	if protocol == "shadowsocks" && strings.TrimSpace(n.Plugin) != "" {
 		if _, _, err := ParseSimpleObfs(n.Plugin, n.PluginOpt); err != nil {
 			return "", err
@@ -53,4 +60,34 @@ func ResolveKernelForNode(n *NodeSpec, preferred string) (string, error) {
 	default:
 		return "", fmt.Errorf("unsupported protocol %q", protocol)
 	}
+}
+
+// TCPHeaderType validates the panel's raw TCP header configuration.
+func TCPHeaderType(n *NodeSpec) (string, error) {
+	network := strings.ToLower(strings.TrimSpace(n.Network))
+	if network != "" && network != "tcp" {
+		return "", nil
+	}
+	raw, exists := n.NetworkSettings["header"]
+	if !exists || raw == nil {
+		return "", nil
+	}
+	header, ok := raw.(map[string]any)
+	if !ok {
+		return "", fmt.Errorf("TCP header must be an object")
+	}
+	kind, ok := header["type"].(string)
+	if !ok && header["type"] != nil {
+		return "", fmt.Errorf("TCP header type must be a string")
+	}
+	switch kind {
+	case "", "none":
+		return "", nil
+	case "http":
+		switch strings.ToLower(strings.TrimSpace(n.Protocol)) {
+		case "vmess", "vless", "trojan":
+			return kind, nil
+		}
+	}
+	return "", fmt.Errorf("unsupported TCP header %q for %s", kind, n.Protocol)
 }

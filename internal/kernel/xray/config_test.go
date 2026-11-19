@@ -572,3 +572,17 @@ func TestExtractECHServerKeys(t *testing.T) {
 		})
 	}
 }
+
+func TestTCPHeaderAndSocksTLSConfig(t *testing.T) {
+	node := &model.NodeSpec{Protocol: "vmess", Network: "tcp", NetworkSettings: map[string]any{"header": map[string]any{"type": "http"}}}
+	inbound := buildInbound(node, testUsers, kernel.TLSCert{})
+	header := inbound["streamSettings"].(M)["tcpSettings"].(M)["header"].(M)
+	if header["type"] != "http" {
+		t.Fatal("TCP header missing")
+	}
+	node = &model.NodeSpec{Protocol: "socks", TLS: 1}
+	inbound = buildInbound(node, testUsers, kernel.TLSCert{CertPEM: []byte("cert"), KeyPEM: []byte("key")})
+	if inbound["streamSettings"].(M)["security"] != "tls" || inbound["settings"].(M)["udp"] != false {
+		t.Fatal("SOCKS TLS must enable TLS and disable unencrypted UDP")
+	}
+}
