@@ -99,3 +99,36 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+
+  publish-rc3:
+    name: Publish verified RC.3 candidate
+    needs: test
+    if: github.ref == 'refs/heads/feature/autokernel-stage1' && contains(github.event.head_commit.message, '[publish-rc3]')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: autokernel-release-candidate
+          path: dist
+          run-id: 44445768332
+          github-token: ${{ github.token }}
+      - name: Publish immutable prerelease assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum -c SHA256SUMS
+          test -f xboard-node-linux-amd64
+          test -f xboard-node-linux-arm64
+          test -f xbctl-linux-amd64
+          test -f xbctl-linux-arm64
+          if gh release view v1.0.0-rc.3 >/dev/null 2>&1; then
+            echo "RC.3 already exists; refusing to overwrite"
+            exit 1
+          fi
+          gh release create v1.0.0-rc.3 SHA256SUMS xboard-node-linux-amd64 xboard-node-linux-arm64 xbctl-linux-amd64 xbctl-linux-arm64 --target 6429c85501b6386cd59a73d6d61438003549353f --prerelease --latest=false --title "V1.0.0 RC.3" --notes "Candidate built and validated in workflow run 44445768332 (commit 6429c85501b6). Includes TCP/UDP limiter fixes, connection revocation and billing recovery protection. Legacy ambiguous reports require manual reconciliation. Real server upgrade, rollback and 24-hour validation are pending. Not a stable release. Embedded build version: autokernel-rc-6429c85501b6."
