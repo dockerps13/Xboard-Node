@@ -24,36 +24,38 @@ func (s *finalReportSink) ReportDevices(controlplane.PushClient, map[int][]strin
 func (s *finalReportSink) SupportsReporting() bool { return true }
 func (s *finalReportSink) SupportsDeviceReports() bool { return false }
 
-func TestFinalReportFailureRetainsTrafficForControlledRetry(t *testing.T) {
+func TestLegacyReportQuarantinesAmbiguousFailureWithoutReplay(t *testing.T) {
 	cfg := &config.Config{Kernel: config.KernelConfig{ConfigDir: t.TempDir()}}
 	s := newService(cfg, controlplane.NewLocalControlPlane(cfg))
 	s.tracker.Process(map[int][2]int64{12: {123, 456}}, nil, 0)
 	sink := &finalReportSink{fail: true}
 	s.sink = sink
-
 	s.pushReportSync()
-	journal, err := reportjournal.Open(filepath.Join(cfg.Kernel.ConfigDir, "unconfirmed-reports"))
+	j, err := reportjournal.Open(filepath.Join(cfg.Kernel.ConfigDir, "unconfirmed-reports"))
 	if err != nil { t.Fatal(err) }
-	uncertain, err := journal.Pending()
-	if err != nil { t.Fatal(err) }
-	if len(uncertain) != 1 || uncertain[0].Traffic[12] != [2]int64{123, 456} {
-		t.Fatalf("unconfirmed traffic archive = %+v", uncertain)
+	pending, err := j.Pending()
+	if err != nil || len(pending) != 1 || pending[0].Traffic[12] != [2]int64{123, 456} {
+		t.Fatalf("audit = %+v, err=%v", pending, err)
 	}
-	if !s.tracker.HasTraffic() {
-		t.Fatal("shutdown report failure must not discard unreported traffic")
-	}
+	if s.tracker.HasTraffic() { t.Fatal("ambiguous bytes must not be automatically replayed") }
+	s.tracker.Process(map[int][2]int64{12: {130, 460}}, nil, 0)
 	sink.fail = false
 	s.pushReportSync()
-	if s.tracker.HasTraffic() {
-		t.Fatal("confirmed report must consume the pending traffic")
+	if len(sink.reports) != 2 || sink.reports[1].Traffic[12] != [2]int64{7, 4} {
+		t.Fatalf("unexpected second report: %+v", sink.reports)
 	}
-	if len(sink.reports) != 2 {
-		t.Fatalf("report attempts: got %d, want 2", len(sink.reports))
-	}
-	for i, report := range sink.reports {
-		if got := report.Traffic[12]; got != [2]int64{123, 456} {
-			t.Fatalf("attempt %d traffic = %v, want original delta", i, got)
-		}
+	pending, err = j.Pending()
+	if err != nil || len(pending) != 1 { t.Fatalf("audit lost: %+v %v", pending, err) }
+}
+
+func TestLegacyReportStorageFailurePreventsSend(t *testing.T) {
+	cfg := &config.Config{Kernel: config.KernelConfig{ConfigDir: ""}}
+	s := newService(cfg, controlplane.NewLocalControlPlane(cfg))
+	sink := &finalReportSink{}
+	s.sink = sink
+	err := s.reportLegacy(controlplane.ReportPayload{Traffic: map[int][2]int64{12: {123, 456}}})
+	if err == nil || len(sink.reports) != 0 || !s.tracker.HasTraffic() {
+		t.Fatal("storage failure must retain unsent data and prevent send")
 	}
 }
 

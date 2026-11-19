@@ -1091,6 +1091,40 @@ func reportTrafficTotals(traffic map[int][2]int64) (up, down uint64) {
 	return
 }
 
+// reportLegacy records the attempted delta before sending it. Without
+// a deduplicating receipt, a failure cannot safely be retried automatically.
+// The local record is for operator reconciliation, never automatic replay.
+func (s *Service) reportLegacy(payload controlplane.ReportPayload) error {
+	if len(payload.Traffic) == 0 {
+		return s.sink.Report(payload)
+	}
+	if s.cfg == nil || s.cfg.Kernel.ConfigDir == "" {
+		s.tracker.RestoreTraffic(payload.Traffic)
+		return fmt.Errorf("legacy traffic reporting requires a writable kernel.config_dir")
+	}
+	j, err := reportjournal.Open(filepath.Join(s.cfg.Kernel.ConfigDir, "unconfirmed-reports"))
+	if err != nil {
+		s.tracker.RestoreTraffic(payload.Traffic)
+		return fmt.Errorf("open legacy report audit: %w", err)
+	}
+	batch, err := j.Append(payload.Traffic)
+	if err != nil {
+		if batch.ID == "" {
+			s.tracker.RestoreTraffic(payload.Traffic)
+		}
+		return fmt.Errorf("persist legacy report audit: %w", err)
+	}
+	if err := s.sink.Report(payload); err != nil {
+		return fmt.Errorf("legacy batch %s retained for manual reconciliation: %w", batch.ID, err)
+	}
+	// The legacy API reported success. This is NOT an idempotent receipt;
+	// if removal fails, leave the audit record for manual reconciliation.
+	if err := j.RemoveLegacyAudit(batch.ID); err != nil {
+		return fmt.Errorf("legacy batch %s reported success but audit cleanup failed: %w", batch.ID, err)
+	}
+	return nil
+}
+
 // pushReportAsync sends the report in a background goroutine so the select
 // loop is never blocked by slow HTTP. Only one push runs at a time.
 func (s *Service) pushReportAsync() {
@@ -1124,13 +1158,10 @@ func (s *Service) pushReportAsync() {
 		if s.reportJournal != nil {
 			err = s.reportWithJournal(payload)
 		} else {
-			err = s.sink.Report(payload)
+			err = s.reportLegacy(payload)
 		}
 		if err != nil {
 			reportLog.Warn("failed to push report", "node_id", nodeID, "machine_id", machineID, "error", err)
-			if s.reportJournal == nil && len(traffic) > 0 {
-				s.tracker.RestoreTraffic(traffic)
-			}
 			if len(aliveIPs) > 0 {
 				s.tracker.RestoreAliveIPs(aliveIPs)
 			}
@@ -1194,27 +1225,8 @@ func (s *Service) pushReportSync() {
 		}
 		return
 	}
-	if err := s.sink.Report(payload); err != nil {
-		nlog.Core().Warn("failed to push final report; retaining unpaid counters in memory", "error", err)
-		// Preserve an on-disk audit copy before this process exits. The
-		// legacy panel may already have charged these bytes despite the HTTP
-		// error, so this is a quarantine record, NOT an automatic replay queue.
-		if len(traffic) > 0 && s.cfg != nil && s.cfg.Kernel.ConfigDir != "" {
-			path := filepath.Join(s.cfg.Kernel.ConfigDir, "unconfirmed-reports")
-			if j, journalErr := reportjournal.Open(path); journalErr != nil {
-				nlog.Core().Error("cannot open unconfirmed traffic journal", "error", journalErr)
-			} else if batch, journalErr := j.Append(traffic); journalErr != nil {
-				nlog.Core().Error("cannot persist unconfirmed traffic", "error", journalErr)
-			} else {
-				nlog.Core().Warn("unconfirmed traffic saved for manual reconciliation; never replay blindly", "batch_id", batch.ID, "path", path)
-			}
-		}
-		// Keep the pending totals available to the owning Service for a
-		// controlled retry. Durable delivery requires a panel-side idempotent
-		// receipt before persisting/replaying reports across process restarts.
-		if len(traffic) > 0 {
-			s.tracker.RestoreTraffic(traffic)
-		}
+	if err := s.reportLegacy(payload); err != nil {
+		nlog.Core().Warn("final legacy report not confirmed; inspect audit records", "error", err)
 		if len(aliveIPs) > 0 {
 			s.tracker.RestoreAliveIPs(aliveIPs)
 		}

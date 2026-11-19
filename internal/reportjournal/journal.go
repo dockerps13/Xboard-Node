@@ -177,6 +177,16 @@ func (j *Journal) Pending() ([]Batch, error) {
 // Acknowledge removes a batch ONLY after an explicit, idempotent panel
 // receipt. Never use an ordinary 200 response on the legacy reporting API.
 func (j *Journal) Acknowledge(id string) error {
+	return j.remove(id)
+}
+
+// RemoveLegacyAudit discards an audit record after the legacy API reports
+// success. It must never be used to acknowledge an idempotent batch.
+func (j *Journal) RemoveLegacyAudit(id string) error {
+	return j.remove(id)
+}
+
+func (j *Journal) remove(id string) error {
 	if !validID(id) { return errors.New("invalid batch ID") }
 	if err := os.Remove(j.path(id)); err != nil { return err }
 	return syncDirectory(j.dir)

@@ -230,3 +230,19 @@ func TestTrafficAccumulation(t *testing.T) {
 		t.Errorf("accumulated: got %v, want [350,600]", flushed[1])
 	}
 }
+
+func TestAliveFlushOwnsSnapshotAndRetriesLatest(t *testing.T) {
+	tr := New()
+	tr.Process(nil, map[int]map[string]bool{1: {"192.0.2.1": true}}, 1)
+	first := tr.FlushAliveIPs()
+	tr.Process(nil, map[int]map[string]bool{2: {"192.0.2.2": true}}, 1)
+	second := tr.FlushAliveIPs()
+	if len(first[1]) != 1 || len(first[2]) != 0 || len(second[2]) != 1 {
+		t.Fatal("subsequent flush mutated previous output")
+	}
+	tr.RestoreAliveIPs(first)
+	retry := tr.FlushAliveIPs()
+	if len(retry[1]) != 0 || len(retry[2]) != 1 {
+		t.Fatal("retry must use current snapshot, not stale addresses")
+	}
+}
