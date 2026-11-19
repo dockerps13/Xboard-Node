@@ -57,6 +57,7 @@ SERVICE_EXISTED=0
 BACKUP_READY=0
 MUTATION_STARTED=0
 SERVICE_WAS_ACTIVE=0
+SERVICE_WAS_ENABLED=""
 CLEANUP_DONE=0
 INSTALL_LOCK="/run/lock/xboard-node-installer.lock"
 
@@ -98,7 +99,20 @@ load_health_port_from_config() {
 
 rollback_install() {
     log_warn "Rolling back installation"
+    if [ "$BACKUP_READY" -ne 1 ] || [ ! -f "$BACKUP_PATH/SHA256SUMS" ]; then
+        log_error "No verified backup available"
+        return 1
+    fi
+    if [ -s "$BACKUP_PATH/SHA256SUMS" ]; then
+        (cd "$BACKUP_PATH" && sha256sum -c SHA256SUMS) || return 1
+    elif [ "$SERVICE_EXISTED" -eq 1 ]; then
+        log_error "Existing installation backup is empty"
+        return 1
+    fi
     systemctl stop "$SERVICE_NAME" >/dev/null 2>&1 || return 1
+    if [ "$SERVICE_WAS_ENABLED" = disabled ] || [ "$SERVICE_EXISTED" -eq 0 ]; then
+        systemctl disable "$SERVICE_NAME" >/dev/null 2>&1 || true
+    fi
     if [ -n "$BACKUP_PATH" ] && [ -d "$BACKUP_PATH" ]; then
         if [ -f "$BACKUP_PATH/xboard-node" ]; then
             install -m 755 "$BACKUP_PATH/xboard-node" "$BINARY_PATH" || return 1
@@ -131,8 +145,11 @@ rollback_install() {
             rm -f "$SERVICE_PATH" || return 1
         fi
     fi
-    load_health_port_from_config "$CONFIG_FILE" || true
+    load_health_port_from_config "$CONFIG_FILE" || return 1
     systemctl daemon-reload || return 1
+    if [ "$SERVICE_WAS_ENABLED" = enabled ]; then
+        systemctl enable "$SERVICE_NAME" >/dev/null 2>&1 || return 1
+    fi
     if [ "$SERVICE_EXISTED" -eq 1 ] || [ -f "$SERVICE_PATH" ]; then
         systemctl reset-failed "$SERVICE_NAME" >/dev/null 2>&1 || true
         if [ "$SERVICE_WAS_ACTIVE" -eq 0 ]; then
@@ -660,6 +677,7 @@ EOF_UNIT
 backup_existing_state() {
     BACKUP_PATH=$(mktemp -d "${BACKUP_DIR}/$(date +%Y%m%d-%H%M%S)-XXXXXX")
     chmod 700 "$BACKUP_PATH"
+    SERVICE_WAS_ENABLED=$(systemctl is-enabled "$SERVICE_NAME" 2>/dev/null || true)
     if systemctl is-active --quiet "$SERVICE_NAME"; then
         SERVICE_WAS_ACTIVE=1
     fi
@@ -684,7 +702,17 @@ backup_existing_state() {
     else
         SERVICE_EXISTED=0
     fi
+    # Record checksums before touching the running installation.
+    (
+        cd "$BACKUP_PATH"
+        : > SHA256SUMS
+        for f in xboard-node xbctl config.yml credentials.env install-meta.json "$SERVICE_NAME"; do
+            if [ -f "$f" ]; then sha256sum "$f" >> SHA256SUMS; fi
+        done
+        if [ -s SHA256SUMS ]; then sha256sum -c SHA256SUMS; fi
+    )
     BACKUP_READY=1
+    log_info "Verified backup: $BACKUP_PATH"
 }
 
 stop_existing_service() {
@@ -765,6 +793,7 @@ perform_install() {
     install_staged_files
     start_service
 
+    MUTATION_STARTED=0
     log_info "Installation succeeded"
     log_info "Service: ${SERVICE_NAME}"
     log_info "Config: ${CONFIG_FILE}"
@@ -799,6 +828,7 @@ perform_upgrade() {
         show_recent_logs
         return 1
     fi
+    MUTATION_STARTED=0
     log_info "Upgrade succeeded"
 }
 

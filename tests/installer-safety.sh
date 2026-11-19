@@ -85,4 +85,20 @@ done
     INSTALL_LOCK="$TMP_DIR/test.lock"
     acquire_install_lock
 )
+# A damaged backup must not stop or overwrite the running service.
+(
+    trap - EXIT
+    BACKUP_PATH="$TMP_DIR/damaged-backup"
+    mkdir "$BACKUP_PATH"
+    printf original > "$BACKUP_PATH/xboard-node"
+    (cd "$BACKUP_PATH" && sha256sum xboard-node > SHA256SUMS)
+    printf damaged > "$BACKUP_PATH/xboard-node"
+    BACKUP_READY=1
+    systemctl() { touch "$TMP_DIR/unexpected-systemctl"; return 0; }
+    if rollback_install; then
+        echo 'damaged rollback accepted' >&2
+        exit 1
+    fi
+    test ! -e "$TMP_DIR/unexpected-systemctl"
+)
 echo 'Installer safety checks passed'
