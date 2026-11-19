@@ -657,58 +657,51 @@ type trackedPacketConn struct {
 	closed   atomic.Bool
 }
 
+// waitPacketBudget charges an entire datagram without splitting it on the
+// wire. WaitN rejects requests larger than Burst; consume bounded chunks
+// instead, respecting cancellation and keeping the datagram intact.
+func waitPacketBudget(ctx context.Context, limiter *rate.Limiter, n int) error {
+	if limiter == nil {
+		return nil
+	}
+	for n > 0 {
+		burst := limiter.Burst()
+		if burst <= 0 {
+			return fmt.Errorf("invalid rate limiter burst")
+		}
+		chunk := n
+		if chunk > burst {
+			chunk = burst
+		}
+		if err := limiter.WaitN(ctx, chunk); err != nil {
+			return err
+		}
+		n -= chunk
+	}
+	return nil
+}
+
 func (c *trackedPacketConn) ReadPacket(buffer *buf.Buffer) (singM.Socksaddr, error) {
 	dest, err := c.PacketConn.ReadPacket(buffer)
-	if err == nil {
-		n := int64(buffer.Len())
-		if c.us != nil {
-			c.us.upload.Add(n) // 从入站读取 = 用户上传
-		}
-		if c.limiter != nil {
-			// Non-blocking rate limiting with context cancellation
-			if !c.limiter.AllowN(time.Now(), int(n)) {
-				resv := c.limiter.ReserveN(time.Now(), int(n))
-				if delay := resv.Delay(); delay > 0 {
-					timer := time.NewTimer(delay)
-					defer timer.Stop()
-					select {
-					case <-timer.C:
-						// Tokens available
-					case <-c.ctx.Done():
-						resv.Cancel()
-						return dest, c.ctx.Err()
-					}
-				}
-			}
-		}
+	if err != nil {
+		return dest, err
 	}
-	return dest, err
+	n := buffer.Len()
+	if c.us != nil {
+		c.us.upload.Add(int64(n))
+	}
+	return dest, waitPacketBudget(c.ctx, c.limiter, n)
 }
 
 func (c *trackedPacketConn) WritePacket(buffer *buf.Buffer, dest singM.Socksaddr) error {
-	n := int64(buffer.Len())
-
-	// Apply rate limiting before write
-	if c.limiter != nil {
-		if !c.limiter.AllowN(time.Now(), int(n)) {
-			resv := c.limiter.ReserveN(time.Now(), int(n))
-			if delay := resv.Delay(); delay > 0 {
-				timer := time.NewTimer(delay)
-				defer timer.Stop()
-				select {
-				case <-timer.C:
-					// Tokens available
-				case <-c.ctx.Done():
-					resv.Cancel()
-					return c.ctx.Err()
-				}
-			}
-		}
+	n := buffer.Len()
+	if err := waitPacketBudget(c.ctx, c.limiter, n); err != nil {
+		buffer.Release()
+		return err
 	}
-
 	err := c.PacketConn.WritePacket(buffer, dest)
 	if err == nil && c.us != nil {
-		c.us.download.Add(n) // 向入站写入 = 用户下载
+		c.us.download.Add(int64(n))
 	}
 	return err
 }
@@ -761,5 +754,5 @@ func (c *trackedPacketConn) UnwrapPacketWriter() (N.PacketWriter, []N.CountFunc)
 }
 
 func (c *trackedPacketConn) Upstream() any           { return c.PacketConn }
-func (c *trackedPacketConn) ReaderReplaceable() bool { return true }
-func (c *trackedPacketConn) WriterReplaceable() bool { return true }
+func (c *trackedPacketConn) ReaderReplaceable() bool { return c.limiter == nil }
+func (c *trackedPacketConn) WriterReplaceable() bool { return c.limiter == nil }
