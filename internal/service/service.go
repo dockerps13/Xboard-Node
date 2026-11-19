@@ -1058,7 +1058,8 @@ func (s *Service) reportWithJournal(payload controlplane.ReportPayload) error {
 		}
 	}
 	// Continue sending status and online metrics even with no traffic.
-	if len(pending) == 0 {
+	if len(pending) == 0 || len(payload.Alive) > 0 {
+		payload.BatchID = ""
 		payload.Traffic = nil
 		return s.sink.Report(payload)
 	}
@@ -1168,6 +1169,7 @@ func (s *Service) pushReportAsync() {
 			s.pushBackoff.onFailure()
 			return
 		}
+		s.tracker.AcknowledgeAliveIPs(aliveIPs)
 		s.pushBackoff.onSuccess()
 		if s.reportJournal != nil {
 			// A successful journal tick can include older batches and leave
@@ -1222,6 +1224,8 @@ func (s *Service) pushReportSync() {
 		// restart is permitted only because the panel opted into deduplication.
 		if err := s.reportWithJournal(payload); err != nil {
 			nlog.Core().Warn("failed to push idempotent final report; pending batch retained on disk", "error", err)
+		} else {
+			s.tracker.AcknowledgeAliveIPs(aliveIPs)
 		}
 		return
 	}
@@ -1230,6 +1234,8 @@ func (s *Service) pushReportSync() {
 		if len(aliveIPs) > 0 {
 			s.tracker.RestoreAliveIPs(aliveIPs)
 		}
+	} else {
+		s.tracker.AcknowledgeAliveIPs(aliveIPs)
 	}
 }
 
@@ -1367,14 +1373,15 @@ func computeUserHash(users []model.UserSpec) string {
 
 // sendDeviceBatch reports local device snapshot to panel via WS.
 func (s *Service) sendDeviceBatch() {
-	if s.wsClient == nil || !s.wsClient.IsConnected() {
+	// HTTP report is the authoritative, acknowledged device channel when
+	// available. WS writes are queued without a receipt and may arrive out
+	// of order relative to HTTP; do not consume or race device state there.
+	if s.sink.SupportsReporting() || s.wsClient == nil || !s.wsClient.IsConnected() {
 		return
 	}
 
 	devices := s.tracker.FlushAliveIPs()
-	// FlushAliveIPs returns nil if no changes since last flush
-	if devices == nil {
-		nlog.Core().Debug("device snapshot unchanged, skipping")
+	if len(devices) == 0 {
 		return
 	}
 	s.sink.ReportDevices(s.wsClient, devices)

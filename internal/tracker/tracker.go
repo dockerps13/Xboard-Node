@@ -1,9 +1,6 @@
 package tracker
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
-	"sort"
 	"sync"
 	"sync/atomic"
 
@@ -49,17 +46,16 @@ type Tracker struct {
 	// Readers load this pointer without any lock.
 	live atomic.Pointer[snapshot]
 
-	// Force a fresh snapshot after a failed report.
-	aliveDirty bool
-
-	// lastAliveIPsHash detects changes to avoid duplicate reports.
-	lastAliveIPsHash string
+	// Users possibly present on the panel, including unconfirmed sends.
+	// Retain until an explicit empty list is acknowledged.
+	reportedAlive map[int]struct{}
 }
 
 func New() *Tracker {
 	t := &Tracker{
 		lastSeen:       make(map[int][2]int64),
 		pendingTraffic: make(map[int][2]int64),
+		reportedAlive:    make(map[int]struct{}),
 	}
 	// Publish initial empty snapshot.
 	t.live.Store(&snapshot{
@@ -157,68 +153,42 @@ func (t *Tracker) HasTraffic() bool {
 	return len(t.pendingTraffic) > 0
 }
 
-// FlushAliveIPs returns per-user alive IPs.
-// Returns an owned snapshot, or nil if unchanged.
+// FlushAliveIPs returns the latest device state on every report, including
+// explicit empty arrays for previously reported users who are now offline.
+// A failed or ambiguous send must not discard these users.
 func (t *Tracker) FlushAliveIPs() map[int][]string {
-	s := t.live.Load()
-
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	// Calculate hash of current aliveIPs
-	currentHash := calcAliveIPsHash(s.aliveIPs)
-
-	// If no changes, return nil to avoid duplicate reporting
-	if !t.aliveDirty && currentHash == t.lastAliveIPsHash {
-		return nil
+	s := t.live.Load()
+	out := make(map[int][]string, len(s.aliveIPs)+len(t.reportedAlive))
+	for uid := range t.reportedAlive {
+		out[uid] = []string{}
 	}
-
-	t.lastAliveIPsHash = currentHash
-
-	t.aliveDirty = false
-	// Each caller owns its output; HTTP and WebSocket may serialize it
-	// concurrently with subsequent flushes.
-	out := make(map[int][]string, len(s.aliveIPs))
 	for uid, ips := range s.aliveIPs {
 		list := make([]string, 0, len(ips))
-		for ip := range ips { list = append(list, ip) }
+		for ip := range ips {
+			list = append(list, ip)
+		}
 		out[uid] = list
+		if len(list) > 0 {
+			t.reportedAlive[uid] = struct{}{}
+		}
 	}
 	return out
 }
 
-// calcAliveIPsHash computes a deterministic hash for change detection.
-func calcAliveIPsHash(aliveIPs map[int]map[string]bool) string {
-	if len(aliveIPs) == 0 {
-		return ""
-	}
-
-	h := sha256.New()
-
-	// Sort user IDs for consistent hashing
-	userIDs := make([]int, 0, len(aliveIPs))
-	for uid := range aliveIPs {
-		userIDs = append(userIDs, uid)
-	}
-	sort.Ints(userIDs)
-
-	for _, uid := range userIDs {
-		ips := aliveIPs[uid]
-		// Sort IPs for consistent hashing
-		ipList := make([]string, 0, len(ips))
-		for ip := range ips {
-			ipList = append(ipList, ip)
-		}
-		sort.Strings(ipList)
-
-		// Write user ID and IPs to hash
-		h.Write([]byte{byte(uid >> 24), byte(uid >> 16), byte(uid >> 8), byte(uid)})
-		for _, ip := range ipList {
-			h.Write([]byte(ip))
+// AcknowledgeAliveIPs retires successfully delivered offline notifications.
+// The reporting service serializes HTTP sends; current live users are always
+// refreshed independently of the acknowledged snapshot.
+func (t *Tracker) AcknowledgeAliveIPs(data map[int][]string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for uid, ips := range data {
+		if len(ips) == 0 {
+			delete(t.reportedAlive, uid)
 		}
 	}
-
-	return hex.EncodeToString(h.Sum(nil))
 }
 
 // CurrentOnline returns a snapshot copy of user_id → device count (distinct IPs).
@@ -232,12 +202,14 @@ func (t *Tracker) CurrentOnline() map[int]int {
 	return cp
 }
 
-// RestoreAliveIPs marks the latest snapshot for retry rather than merging
-// stale disconnected IPs into the current device state.
-func (t *Tracker) RestoreAliveIPs(_ map[int][]string) {
+// RestoreAliveIPs preserves users from an ambiguous or failed send. The next
+// report uses current addresses, never resurrecting stale device IPs.
+func (t *Tracker) RestoreAliveIPs(data map[int][]string) {
 	t.mu.Lock()
-	t.aliveDirty = true
-	t.mu.Unlock()
+	defer t.mu.Unlock()
+	for uid := range data {
+		t.reportedAlive[uid] = struct{}{}
+	}
 }
 
 // LogStats logs current tracking statistics.

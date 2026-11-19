@@ -1,6 +1,7 @@
 package tracker
 
 import (
+	"encoding/json"
 	"testing"
 )
 
@@ -164,10 +165,10 @@ func TestFlushAliveIPs(t *testing.T) {
 		t.Errorf("user 2 IPs: got %d, want 1", len(flushed[2]))
 	}
 
-	// Without another Process call, hash is same → returns nil (skip duplicate)
+	// Unchanged online users must refresh the panel's expiring device state.
 	flushed2 := tr.FlushAliveIPs()
-	if flushed2 != nil {
-		t.Errorf("expected nil on duplicate flush, got %v", flushed2)
+	if len(flushed2[1]) != 2 || len(flushed2[2]) != 1 {
+		t.Errorf("expected periodic refresh, got %v", flushed2)
 	}
 }
 
@@ -244,5 +245,41 @@ func TestAliveFlushOwnsSnapshotAndRetriesLatest(t *testing.T) {
 	retry := tr.FlushAliveIPs()
 	if len(retry[1]) != 0 || len(retry[2]) != 1 {
 		t.Fatal("retry must use current snapshot, not stale addresses")
+	}
+}
+
+func TestAliveOfflineUntilAcknowledged(t *testing.T) {
+	tr := New()
+	tr.Process(nil, map[int]map[string]bool{2: {"192.0.2.1": true}}, 1)
+	first := tr.FlushAliveIPs()
+	tr.AcknowledgeAliveIPs(first)
+	tr.Process(nil, nil, 0)
+	for i := 0; i < 3; i++ {
+		out := tr.FlushAliveIPs()
+		body, err := json.Marshal(out)
+		if err != nil || string(body) != "{\"2\":[]}" {
+			t.Fatalf("offline report: %s, %v", body, err)
+		}
+		tr.RestoreAliveIPs(out)
+	}
+	tr.AcknowledgeAliveIPs(tr.FlushAliveIPs())
+	if len(tr.FlushAliveIPs()) != 0 {
+		t.Fatal("acknowledged offline user must be retired")
+	}
+}
+
+func TestAliveAmbiguousOnlineThenOffline(t *testing.T) {
+	tr := New()
+	tr.Process(nil, map[int]map[string]bool{2: {"192.0.2.1": true}}, 1)
+	tr.RestoreAliveIPs(tr.FlushAliveIPs())
+	tr.Process(nil, nil, 0)
+	out := tr.FlushAliveIPs()
+	if ips, ok := out[2]; !ok || ips == nil || len(ips) != 0 {
+		t.Fatalf("missing explicit offline notification: %#v", out)
+	}
+	tr.Process(nil, map[int]map[string]bool{2: {"192.0.2.2": true}}, 1)
+	out = tr.FlushAliveIPs()
+	if len(out[2]) != 1 || out[2][0] != "192.0.2.2" {
+		t.Fatalf("reconnected user must use latest IP: %#v", out)
 	}
 }
