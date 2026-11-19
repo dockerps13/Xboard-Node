@@ -45,10 +45,10 @@ jobs:
       - name: Static analysis
         run: go vet -tags "with_quic with_utls with_wireguard with_clash_api" ./...
       - name: Race-sensitive kernel and control-plane tests
-        if: github.event_name == 'workflow_dispatch'
-        run: go test -race -tags "with_quic with_utls with_wireguard with_clash_api" ./internal/model ./internal/machine ./internal/controlplane ./internal/tracker ./internal/reportjournal ./internal/service ./internal/panel ./internal/kernel/singbox ./internal/kernel/obfs ./internal/monitor
+        if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[full-ci]')
+        run: go test -race -tags "with_quic with_utls with_wireguard with_clash_api" ./internal/model ./internal/machine ./internal/controlplane ./internal/limiter ./internal/tracker ./internal/reportjournal ./internal/service ./internal/panel ./internal/kernel/singbox ./internal/kernel/obfs ./internal/monitor
       - name: Naive real client interoperability (test-only build)
-        if: github.event_name == 'workflow_dispatch'
+        if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[full-ci]')
         env:
           CGO_ENABLED: "0"
         run: |
@@ -63,14 +63,14 @@ jobs:
           go test -c -tags "with_quic with_utls with_wireguard with_clash_api with_naive_outbound with_purego" -o "$scratch/naive.test" ./internal/kernel/singbox
           "$scratch/naive.test" -test.v -test.count=1 -test.timeout=3m -test.run '^TestNaiveClientRoundTrip$'
       - name: Mixed protocol concurrent load (100 to 5000)
-        if: github.event_name == 'workflow_dispatch'
+        if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[full-ci]')
         run: |
           ulimit -n 65536
           for n in 100 500 1000 5000; do
             XBOARD_TEST_CONNECTIONS="$n" go test -v -count=1 -timeout 3m -tags "with_quic with_utls with_wireguard with_clash_api" ./internal/kernel/singbox -run '^TestMixedProtocolConcurrentLoad$'
           done
       - name: Encrypted protocol concurrent load and repeated recovery
-        if: github.event_name == 'workflow_dispatch'
+        if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[full-ci]')
         run: |
           ulimit -n 65536
           for n in 500 1000 5000; do
@@ -78,20 +78,20 @@ jobs:
           done
           XBOARD_TEST_CONNECTIONS=1000 go test -v -count=5 -timeout 5m -tags "with_quic with_utls with_wireguard with_clash_api" ./internal/kernel/singbox -run '^TestEncryptedProtocolConcurrentLoad$'
       - name: Build release candidate binaries
-        if: github.event_name == 'workflow_dispatch'
+        if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[full-ci]')
         run: |
           make build-linux build-linux-arm64 VERSION=autokernel-rc-${GITHUB_SHA:0:12}
           mkdir -p dist
           cp xboard-node-linux-amd64 xboard-node-linux-arm64 xbctl-linux-amd64 xbctl-linux-arm64 dist/
           (cd dist && sha256sum xboard-node-linux-* xbctl-linux-* > SHA256SUMS)
       - name: Smoke test native release binaries
-        if: github.event_name == 'workflow_dispatch'
+        if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[full-ci]')
         run: |
           ./dist/xboard-node-linux-amd64 --help
           ./dist/xbctl-linux-amd64 --help
           bash -n install.sh
       - name: Upload release candidate binaries
-        if: github.event_name == 'workflow_dispatch'
+        if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[full-ci]')
         uses: actions/upload-artifact@v4
         with:
           name: autokernel-release-candidate
