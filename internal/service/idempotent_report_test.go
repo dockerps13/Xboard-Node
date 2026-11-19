@@ -65,3 +65,37 @@ func TestIdempotentStorageFailureRestoresCountersWithoutSending(t *testing.T) {
 		t.Fatal("transmitted unjournaled bytes")
 	}
 }
+
+
+func TestJournalDeviceSnapshotHasIndependentReport(t *testing.T) {
+	cfg := &config.Config{}
+	s := newService(cfg, controlplane.NewLocalControlPlane(cfg))
+	j, err := reportjournal.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.reportJournal = j
+	sink := &finalReportSink{}
+	s.sink = sink
+	if _, err := j.Append(map[int][2]int64{2: {10, 20}}); err != nil {
+		t.Fatal(err)
+	}
+	payload := controlplane.ReportPayload{Alive: map[int][]string{2: {}}, Online: map[int]int{2: 0}}
+	if err := s.reportWithJournal(payload); err != nil {
+		t.Fatal(err)
+	}
+	if len(sink.reports) != 2 || sink.reports[0].BatchID == "" {
+		t.Fatalf("expected billing and independent device report: %+v", sink.reports)
+	}
+	device := sink.reports[1]
+	if ips, ok := device.Alive[2]; !ok || ips == nil || len(ips) != 0 || device.BatchID != "" || len(device.Traffic) != 0 {
+		t.Fatalf("incorrect independent offline report: %+v", device)
+	}
+}
+
+func TestDeviceReportCounts(t *testing.T) {
+	ips, offline := deviceReportCounts(map[int][]string{2: {}, 3: {"192.0.2.1", "2001:db8::1"}})
+	if ips != 2 || offline != 1 {
+		t.Fatalf("ips=%d offline=%d", ips, offline)
+	}
+}

@@ -1057,8 +1057,11 @@ func (s *Service) reportWithJournal(payload controlplane.ReportPayload) error {
 			return fmt.Errorf("acknowledge batch %s: %w", batch.ID, err)
 		}
 	}
-	// Continue sending status and online metrics even with no traffic.
-	if len(pending) == 0 {
+	// A deduplicated billing receipt must not be the sole confirmation of
+	// a fresh device snapshot. Send it without a billing ID as well.
+	// Preserve the existing bounded traffic-only backlog behavior.
+	if len(pending) == 0 || len(payload.Alive) > 0 {
+		payload.BatchID = ""
 		payload.Traffic = nil
 		return s.sink.Report(payload)
 	}
@@ -1152,6 +1155,8 @@ func (s *Service) pushReportAsync() {
 	metrics["kernel_status"] = s.kernel.IsRunning()
 
 	reportLog, nodeID, machineID := s.reportLogger()
+	activeDevices, offlineUsers := deviceReportCounts(aliveIPs)
+	started := time.Now()
 	s.pushWG.Add(1)
 	go func() {
 		defer s.pushWG.Done()
@@ -1164,7 +1169,7 @@ func (s *Service) pushReportAsync() {
 			err = s.reportLegacy(payload)
 		}
 		if err != nil {
-			reportLog.Warn("failed to push report", "node_id", nodeID, "machine_id", machineID, "error", err)
+			reportLog.Warn("failed to push report", "node_id", nodeID, "machine_id", machineID, "device_report_users", len(aliveIPs), "device_report_ips", activeDevices, "device_offline_users", offlineUsers, "duration_ms", time.Since(started).Milliseconds(), "error", err)
 			if len(aliveIPs) > 0 {
 				s.tracker.RestoreAliveIPs(aliveIPs)
 			}
@@ -1172,6 +1177,9 @@ func (s *Service) pushReportAsync() {
 			return
 		}
 		s.tracker.AcknowledgeAliveIPs(aliveIPs)
+		if len(aliveIPs) > 0 {
+			reportLog.Info("device report confirmed", "node_id", nodeID, "machine_id", machineID, "device_report_users", len(aliveIPs), "device_report_ips", activeDevices, "device_offline_users", offlineUsers, "duration_ms", time.Since(started).Milliseconds())
+		}
 		s.pushBackoff.onSuccess()
 		if s.reportJournal != nil {
 			// A successful journal tick can include older batches and leave
@@ -1229,6 +1237,9 @@ func (s *Service) pushReportSync() {
 		// restart is permitted only because the panel opted into deduplication.
 		if err := s.reportWithJournal(payload); err != nil {
 			nlog.Core().Warn("failed to push idempotent final report; pending batch retained on disk", "error", err)
+			s.tracker.RestoreAliveIPs(aliveIPs)
+		} else {
+			s.tracker.AcknowledgeAliveIPs(aliveIPs)
 		}
 		return
 	}
@@ -1237,7 +1248,20 @@ func (s *Service) pushReportSync() {
 		if len(aliveIPs) > 0 {
 			s.tracker.RestoreAliveIPs(aliveIPs)
 		}
+	} else {
+		s.tracker.AcknowledgeAliveIPs(aliveIPs)
 	}
+}
+
+// deviceReportCounts summarizes a snapshot without logging user IDs or IPs.
+func deviceReportCounts(alive map[int][]string) (ips, offline int) {
+	for _, addresses := range alive {
+		ips += len(addresses)
+		if len(addresses) == 0 {
+			offline++
+		}
+	}
+	return
 }
 
 // buildMetrics aggregates node-level metrics to be reported to the panel.
