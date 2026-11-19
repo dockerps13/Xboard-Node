@@ -136,3 +136,36 @@ func TestLimitedTCPDoesNotAdvertiseReplaceableIO(t *testing.T) {
 		t.Fatal("limited TCP path must not advertise replaceable I/O")
 	}
 }
+
+
+func TestGlobalDeviceAliasesCountOnce(t *testing.T) {
+	tr := NewConnTracker(0)
+	tr.UpdateGlobalDevices(map[int][]string{1: {"::ffff:192.0.2.1", "192.0.2.1", "[2001:db8::1]:443", "2001:0db8::1", "invalid"}})
+	us := &userStats{ips: make(map[string]int)}
+	if !tr.admitDevice(us, 1, "192.0.2.1", 2) {
+		t.Fatal("known global IPv4 device rejected")
+	}
+	if !tr.admitDevice(us, 1, "2001:db8::1", 2) {
+		t.Fatal("known global IPv6 device rejected")
+	}
+	if tr.admitDevice(us, 1, "192.0.2.2", 2) {
+		t.Fatal("third distinct device admitted")
+	}
+	tr.ClearGlobalDevices()
+	us.removeConn("2001:db8::1")
+	if !tr.admitDevice(us, 1, "192.0.2.2", 2) {
+		t.Fatal("released device slot not reusable")
+	}
+}
+
+func TestGlobalDeviceAliasesDoNotConsumeExtraSlots(t *testing.T) {
+	tr := NewConnTracker(0)
+	tr.UpdateGlobalDevices(map[int][]string{1: {"::ffff:192.0.2.1", "192.0.2.1", "invalid"}})
+	us := &userStats{ips: make(map[string]int)}
+	if !tr.admitDevice(us, 1, "192.0.2.2", 2) {
+		t.Fatal("duplicate aliases or invalid address consumed a second slot")
+	}
+	if tr.admitDevice(us, 1, "192.0.2.3", 2) {
+		t.Fatal("third device admitted")
+	}
+}

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/netip"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -195,13 +196,25 @@ func (t *ConnTracker) setUserIdentities(m map[string]int, aliases map[string]str
 }
 
 // UpdateGlobalDevices syncs global device state from panel.
+func canonicalDeviceIP(ip string) string {
+	if addr, err := netip.ParseAddr(ip); err == nil {
+		return addr.WithZone("").Unmap().String()
+	}
+	if ap, err := netip.ParseAddrPort(ip); err == nil {
+		return ap.Addr().WithZone("").Unmap().String()
+	}
+	return ""
+}
+
 func (t *ConnTracker) UpdateGlobalDevices(users map[int][]string) {
 	t.globalMu.Lock()
 	t.globalDevices = make(map[int]map[string]bool, len(users))
 	for uid, ips := range users {
 		m := make(map[string]bool, len(ips))
 		for _, ip := range ips {
-			m[ip] = true
+			if normalized := canonicalDeviceIP(ip); normalized != "" {
+				m[normalized] = true
+			}
 		}
 		t.globalDevices[uid] = m
 	}
@@ -235,6 +248,9 @@ func (t *ConnTracker) RoutedConnection(
 	// so device limits and online IP reporting remain accurate.
 	if realIP, ok := obfs.ResolveOrigin(sourceIP, metadata.Source.Port); ok {
 		sourceIP = realIP
+	}
+	if normalized := canonicalDeviceIP(sourceIP); normalized != "" {
+		sourceIP = normalized
 	}
 
 	t.usersMu.RLock()
@@ -288,6 +304,9 @@ func (t *ConnTracker) RoutedPacketConnection(
 ) N.PacketConn {
 	uuid := metadata.User
 	sourceIP := metadata.Source.Addr.String()
+	if normalized := canonicalDeviceIP(sourceIP); normalized != "" {
+		sourceIP = normalized
+	}
 
 	t.usersMu.RLock()
 	if canonical, ok := t.identityAliases[uuid]; ok {
