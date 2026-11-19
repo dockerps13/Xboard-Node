@@ -49,4 +49,40 @@ for state in incomplete ready_not_mutated mutated; do
         test ! -e "$marker"
     fi
 done
+# Local files are allowed only through explicit operator options.
+(
+    cd "$TMP_DIR"
+    touch xboard-node xboard-node-linux-amd64 xbctl
+    ARCH=amd64
+    BINARY_SOURCE=""
+    test -z "$(select_binary_source)"
+    BINARY_SOURCE=./xboard-node
+    test "$(select_binary_source)" = "./xboard-node"
+)
+for v in latest v1.0.0 v1.0.0-rc.5; do
+    RELEASE_VERSION="$v"
+    validate_release_version
+done
+for v in '../bad' 'v1.0.0/other' ''; do
+    RELEASE_VERSION="$v"
+    if validate_release_version; then
+        echo 'invalid release accepted' >&2
+        exit 1
+    fi
+done
+# Use a temporary lock, never touch the actual host installer lock.
+(
+    trap - EXIT
+    INSTALL_LOCK="$TMP_DIR/test.lock"
+    acquire_install_lock
+    if (exec 9>&-; acquire_install_lock); then
+        echo 'concurrent installer accepted' >&2
+        exit 1
+    fi
+)
+(
+    trap - EXIT
+    INSTALL_LOCK="$TMP_DIR/test.lock"
+    acquire_install_lock
+)
 echo 'Installer safety checks passed'

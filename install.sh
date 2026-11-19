@@ -58,6 +58,7 @@ BACKUP_READY=0
 MUTATION_STARTED=0
 SERVICE_WAS_ACTIVE=0
 CLEANUP_DONE=0
+INSTALL_LOCK="/run/lock/xboard-node-installer.lock"
 
 log_info()  { echo -e "${GREEN}[INFO]${NC} $1"; }
 log_warn()  { echo -e "${YELLOW}[WARN]${NC} $1"; }
@@ -402,6 +403,27 @@ install_dependencies() {
     esac
 }
 
+# Lock outside INSTALL_ROOT so uninstall --purge cannot invalidate it.
+# The open descriptor is held until this installer exits.
+acquire_install_lock() {
+    if ! command -v flock >/dev/null 2>&1; then
+        log_error "flock (util-linux) is required for safe installation"
+        return 1
+    fi
+    exec 9>"$INSTALL_LOCK"
+    if ! flock -n 9; then
+        log_error "Another xboard-node installer is running"
+        return 1
+    fi
+}
+
+validate_release_version() {
+    if ! [[ "$RELEASE_VERSION" =~ ^(latest|v[0-9][0-9A-Za-z.-]*)$ ]]; then
+        log_error "Invalid release version: $RELEASE_VERSION"
+        return 1
+    fi
+}
+
 ensure_dirs() {
     mkdir -p "$INSTALL_ROOT" "$BACKUP_DIR"
     chmod 700 "$INSTALL_ROOT"
@@ -477,14 +499,6 @@ select_binary_source() {
         echo "$BINARY_SOURCE"
         return
     fi
-    if [ -f "./xboard-node" ]; then
-        echo "./xboard-node"
-        return
-    fi
-    if [ -f "./xboard-node-linux-${ARCH}" ]; then
-        echo "./xboard-node-linux-${ARCH}"
-        return
-    fi
     echo ""
 }
 
@@ -530,7 +544,7 @@ stage_binary() {
     else
         resolve_download_url "xboard-node-linux-${ARCH}"
         log_step "Downloading binary: ${DOWNLOAD_URL}"
-        if ! curl -fsSL "$DOWNLOAD_URL" -o "$staged"; then
+        if ! curl -fsSL --connect-timeout 10 --max-time 300 --retry 2 --retry-max-time 600 "$DOWNLOAD_URL" -o "$staged"; then
             log_error "Failed to download binary from ${DOWNLOAD_URL}"
             exit 1
         fi
@@ -552,10 +566,6 @@ stage_xbctl() {
             exit 1
         fi
         local_src="$CLI_BINARY_SOURCE"
-    elif [ -f "./xbctl" ]; then
-        local_src="./xbctl"
-    elif [ -f "./xbctl-linux-${ARCH}" ]; then
-        local_src="./xbctl-linux-${ARCH}"
     fi
     if [ -n "$local_src" ]; then
         log_step "Using local xbctl binary: ${local_src}"
@@ -564,7 +574,7 @@ stage_xbctl() {
     else
         resolve_download_url "xbctl-linux-${ARCH}"
         log_step "Downloading xbctl: ${DOWNLOAD_URL}"
-        if ! curl -fsSL "$DOWNLOAD_URL" -o "$staged"; then
+        if ! curl -fsSL --connect-timeout 10 --max-time 300 --retry 2 --retry-max-time 600 "$DOWNLOAD_URL" -o "$staged"; then
             log_error "Failed to download xbctl from ${DOWNLOAD_URL}"
             exit 1
         fi
@@ -868,6 +878,8 @@ main() {
     detect_arch
     detect_os
     ensure_systemd
+    validate_release_version
+    acquire_install_lock
     install_dependencies
 
     case "$ACTION" in
