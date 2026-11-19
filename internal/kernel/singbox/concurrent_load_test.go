@@ -197,4 +197,31 @@ func testConcurrentLoad(t *testing.T, protocols []string) {
 	runtime.ReadMemStats(&after)
 	afterFD, _ := os.ReadDir("/proc/self/fd")
 	t.Logf("completed=%d elapsed=%s heap_after_gc=%d goroutines_after=%d fd_after=%d", count, time.Since(start), after.HeapAlloc, runtime.NumGoroutine(), len(afterFD))
+	// Running protocol workers may retain idle UDP state legitimately.
+	// Check bounded process-wide recovery after stopping both server kernels.
+	if os.Getenv("XBOARD_TEST_RESOURCE_RECOVERY") != "1" {
+		return
+	}
+	for _, server := range servers {
+		server.Stop()
+	}
+	target.Close()
+	deadline = time.Now().Add(20 * time.Second)
+	for {
+		runtime.GC()
+		runtime.ReadMemStats(&after)
+		fds, fdErr := os.ReadDir("/proc/self/fd")
+		g := runtime.NumGoroutine()
+		if fdErr != nil || baseFD == nil {
+			t.Fatalf("resource recovery requires Linux fd measurements: %v", fdErr)
+		}
+		if len(fds) <= len(baseFD)+32 && g <= baseG+32 {
+			t.Logf("resource recovery: goroutines=%d baseline=%d fd=%d baseline=%d heap=%d", g, baseG, len(fds), len(baseFD), after.HeapAlloc)
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("resources did not recover: goroutines=%d baseline=%d fd=%d baseline=%d", g, baseG, len(fds), len(baseFD))
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
 }
