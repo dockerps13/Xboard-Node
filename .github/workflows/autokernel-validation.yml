@@ -19,6 +19,8 @@ jobs:
     name: Go test and compile
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    env:
+      RELEASE_VERSION: ${{ contains(github.event.head_commit.message, '[publish-v1.0.0]') && 'v1.0.0' || 'v1.0.0-rc.7' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -91,7 +93,7 @@ jobs:
       - name: Build release candidate binaries
         if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[full-ci]')
         run: |
-          make build-linux build-linux-arm64 VERSION=v1.0.0-rc.7-${GITHUB_SHA:0:12}
+          make build-linux build-linux-arm64 VERSION=${RELEASE_VERSION}
           mkdir -p dist
           cp xboard-node-linux-amd64 xboard-node-linux-arm64 xbctl-linux-amd64 xbctl-linux-arm64 dist/
           cp install.sh dist/install.sh
@@ -100,7 +102,7 @@ jobs:
       - name: Smoke test native release binaries
         if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[full-ci]')
         run: |
-          ./dist/xboard-node-linux-amd64 -v | grep -F "v1.0.0-rc.7-${GITHUB_SHA:0:12}"
+          ./dist/xboard-node-linux-amd64 -v | grep -F "${RELEASE_VERSION}"
           ./dist/xboard-node-linux-amd64 --help
           ./dist/xbctl-linux-amd64 --help
           bash -n install.sh
@@ -114,10 +116,10 @@ jobs:
           retention-days: 7
 
 
-  publish-rc7:
-    name: Publish verified RC.7 candidate
+  publish-v1.0.0:
+    name: Publish verified V1.0.0
     needs: test
-    if: github.event_name == 'push' && github.ref == 'refs/heads/feature/autokernel-stage1' && contains(github.event.head_commit.message, '[publish-rc7]') && contains(github.event.head_commit.message, '[full-ci]')
+    if: github.event_name == 'push' && github.ref == 'refs/heads/feature/autokernel-stage1' && contains(github.event.head_commit.message, '[publish-v1.0.0]') && contains(github.event.head_commit.message, '[full-ci]')
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -131,6 +133,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
+          RELEASE_VERSION: v1.0.0
         run: |
           set -euo pipefail
           cd dist
@@ -139,9 +142,9 @@ jobs:
           for f in xboard-node-linux-amd64 xboard-node-linux-arm64 xbctl-linux-amd64 xbctl-linux-arm64 install.sh; do test -s "$f"; done
           bash -n install.sh
           chmod +x xboard-node-linux-amd64
-          ./xboard-node-linux-amd64 -v | grep -F "v1.0.0-rc.7-${GITHUB_SHA:0:12}"
-          if gh release view v1.0.0-rc.7 >/dev/null 2>&1; then
-            echo "RC.7 already exists; refusing to overwrite"
+          ./xboard-node-linux-amd64 -v | grep -F "${RELEASE_VERSION}"
+          if gh release view v1.0.0 >/dev/null 2>&1; then
+            echo "V1.0.0 already exists; refusing to overwrite"
             exit 1
           fi
-          gh release create v1.0.0-rc.7 SHA256SUMS SOURCE_COMMIT install.sh xboard-node-linux-amd64 xboard-node-linux-arm64 xbctl-linux-amd64 xbctl-linux-arm64 --target "$GITHUB_SHA" --prerelease --latest=false --title "V1.0.0 RC.7" --notes "Security and reliability candidate from workflow ${GITHUB_RUN_ID}, commit ${GITHUB_SHA}. Suppresses credential-bearing panel diagnostics and durably retries proven-unsent legacy traffic reports. Ambiguous report outcomes and historical audit batches still require manual reconciliation. RC.6 field evidence does not automatically qualify RC.7. Real API recovery, ledger verification, upgrade/rollback, restart, cross-node validation and 24-hour staging acceptance remain required. Rotate previously exposed credentials. Distributed atomic device admission remains experimental."
+          gh release create v1.0.0 SHA256SUMS SOURCE_COMMIT install.sh xboard-node-linux-amd64 xboard-node-linux-arm64 xbctl-linux-amd64 xbctl-linux-arm64 --target "$GITHUB_SHA" --latest --title "V1.0.0" --notes "First stable release, based on RC.7 application code. Full CI and release artifact checks are required before publication. RC.7 field tests verified AMD64 VLESS and Shadowsocks, normal traffic accounting at rate 1, API recovery, proven-unsent retry, crash device recovery, and automatic installer rollback. The maintainer elected to publish before completing 24-hour staging and same-IP cross-node field validation; these remain pending. ARM64 is cross-built, not field-tested. Legacy XBoard APIs do not guarantee end-to-end exactly-once accounting; ambiguous batches require manual reconciliation. Distributed atomic device admission remains experimental. Rotate any previously exposed credentials before production use. Stable binaries are rebuilt with the stable version identifier; they are not byte-identical to RC.7. Source commit: ${GITHUB_SHA}; workflow: ${GITHUB_RUN_ID}."
