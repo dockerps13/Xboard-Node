@@ -32,8 +32,9 @@ jobs:
       - name: PHP syntax lint (panel integration candidate)
         run: |
           php -v
-          find integrations/xboard-idempotent -name '*.php' -print0 |
+          find integrations -name '*.php' -print0 |
             xargs -0 -n 1 php -l
+          php integrations/xboard-device-snapshots/tests/snapshot.php
       - name: Installer safety tests
         run: |
           bash -n install.sh

@@ -7,3 +7,17 @@ Advertise settings.global_device_snapshots=true in the V2 handshake only after i
 The node fetches the full snapshot at bootstrap and REST polling, independent of user/config ETags. Failure does not clear the last snapshot; kernel freshness limits still expire it after 60 seconds. A connected WebSocket takes precedence. Legacy panels that omit the capability receive no additional requests.
 
 This is eventual synchronization, not strict distributed admission. A central atomic lease/reservation API and concurrency tests are required for strict multi-server device limits. Test the actual Laravel controller, authorization, expiration, and Redis schema before enabling. No panel code or production deployment is included here.
+
+## PHP response component
+
+Copy app/Services/GlobalDeviceSnapshot.php to the panel test copy. Inside the authenticated V2 controller, reuse the exact existing user endpoint authorization logic to produce the allowed user IDs, then call:
+
+```php
+$payload = \\App\\Services\\GlobalDeviceSnapshot::build(
+    $authorizedUserIds,
+    fn (array $ids) => app(\\App\\Services\\DeviceStateService::class)->getUsersDevices($ids)
+);
+return response()->json($payload)->header('Cache-Control', 'no-store');
+```
+
+The existing DeviceStateService must return user ID => list of unexpired IP strings. Verify this contract against the deployed source. Return an error on Redis failure rather than an empty successful result. The helper filters unauthorized rows even if the callback returns extra users. The exact route and middleware wiring must be verified on the real panel before enabling the handshake flag. Run php integrations/xboard-device-snapshots/tests/snapshot.php for standalone regression tests.
