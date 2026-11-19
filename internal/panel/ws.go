@@ -199,7 +199,7 @@ func (w *WSClient) Run(ctx context.Context) {
 func (w *WSClient) connect(ctx context.Context) error {
 	u, err := url.Parse(w.wsURL)
 	if err != nil {
-		return fmt.Errorf("parse ws url: %w", err)
+		return fmt.Errorf("parse ws url: invalid URL")
 	}
 	q := u.Query()
 	q.Set("token", w.token)
@@ -210,14 +210,14 @@ func (w *WSClient) connect(ctx context.Context) error {
 	}
 	u.RawQuery = q.Encode()
 
-	nlog.Core().Debug("ws connecting", "url", u.String())
+	nlog.Core().Debug("ws connecting")
 
 	dialer := websocket.Dialer{
 		HandshakeTimeout: w.cfg.HandshakeTimeout,
 	}
 	conn, _, err := dialer.DialContext(ctx, u.String(), nil)
 	if err != nil {
-		return fmt.Errorf("dial: %w", err)
+		return fmt.Errorf("dial: %w", safePanelTransportError(err))
 	}
 	defer conn.Close()
 
@@ -226,9 +226,9 @@ func (w *WSClient) connect(ctx context.Context) error {
 	// Read first message — expect auth.success or error
 	var firstMsg wsMessage
 	if err := conn.ReadJSON(&firstMsg); err != nil {
-		return fmt.Errorf("read auth response: %w", err)
+		return fmt.Errorf("read auth response: %w", safePanelTransportError(err))
 	}
-	nlog.Core().Debug("ws recv", "event", firstMsg.Event, "data", string(firstMsg.Data))
+	nlog.Core().Debug("ws recv", "event", firstMsg.Event)
 
 	if firstMsg.Event == "error" {
 		var errData struct {
@@ -237,7 +237,7 @@ func (w *WSClient) connect(ctx context.Context) error {
 		if err := json.Unmarshal(firstMsg.Data, &errData); err != nil {
 			return fmt.Errorf("auth failed (unable to parse error: %v)", err)
 		}
-		return fmt.Errorf("auth failed: %s", errData.Message)
+		return fmt.Errorf("panel rejected websocket authentication")
 	}
 
 	if firstMsg.Event != "auth.success" {
@@ -274,7 +274,7 @@ func (w *WSClient) connect(ctx context.Context) error {
 				}
 				return
 			}
-			nlog.Core().Debug("ws recv", "event", msg.Event, "data", string(msg.Data))
+			nlog.Core().Debug("ws recv", "event", msg.Event)
 			w.handleMessage(msg)
 			if msg.Event == "ping" {
 				select {
@@ -296,7 +296,7 @@ func (w *WSClient) connect(ctx context.Context) error {
 			return nil
 
 		case err := <-errCh:
-			return fmt.Errorf("read: %w", err)
+			return fmt.Errorf("read: %w", safePanelTransportError(err))
 
 		case <-reportTicker.C:
 			// Send periodic node.status via WebSocket
@@ -316,10 +316,10 @@ func (w *WSClient) connect(ctx context.Context) error {
 
 		case msg := <-writeCh:
 			// Perform the actual network write asynchronously in this loop.
-			nlog.Core().Debug("ws send", "event", msg.Event, "data", string(msg.Data))
+			nlog.Core().Debug("ws send", "event", msg.Event)
 			conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
 			if err := conn.WriteJSON(msg); err != nil {
-				return fmt.Errorf("write: %w", err)
+				return fmt.Errorf("write: %w", safePanelTransportError(err))
 			}
 		}
 	}

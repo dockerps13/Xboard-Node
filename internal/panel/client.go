@@ -91,8 +91,7 @@ func (c *Client) Handshake() (*HandshakeResponse, error) {
 	defer drainAndClose(resp.Body)
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return nil, fmt.Errorf("handshake status %d: %s", resp.StatusCode, body)
+		return nil, fmt.Errorf("handshake status %d", resp.StatusCode)
 	}
 
 	var hs HandshakeResponse
@@ -241,8 +240,7 @@ func (c *Client) GetConfig() (*NodeConfig, error) {
 		return nil, nil
 	}
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return nil, fmt.Errorf("status %d: %s", resp.StatusCode, body)
+		return nil, fmt.Errorf("status %d", resp.StatusCode)
 	}
 
 	var raw map[string]interface{}
@@ -253,7 +251,7 @@ func (c *Client) GetConfig() (*NodeConfig, error) {
 	var cfg NodeConfig
 	// Use mapstructure for weak type conversion (string -> int, bool -> string, etc.)
 	if err := decodeWeakRaw(raw, &cfg); err != nil {
-		return nil, fmt.Errorf("weak decode config: %w", err)
+		return nil, fmt.Errorf("invalid config fields")
 	}
 
 	// Basic validation
@@ -279,8 +277,7 @@ func (c *Client) GetUsers() ([]User, error) {
 		return nil, nil
 	}
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return nil, fmt.Errorf("status %d: %s", resp.StatusCode, body)
+		return nil, fmt.Errorf("status %d", resp.StatusCode)
 	}
 
 	var usersResp UsersResponse
@@ -344,8 +341,7 @@ func (c *Client) GetMachineNodes() (*MachineNodesResponse, error) {
 	defer drainAndClose(resp.Body)
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return nil, fmt.Errorf("machine nodes status %d: %s", resp.StatusCode, body)
+		return nil, fmt.Errorf("machine nodes status %d", resp.StatusCode)
 	}
 
 	var out MachineNodesResponse
@@ -440,8 +436,7 @@ func (c *Client) postJSON(path string, payload map[string]interface{}) error {
 		if path == "/api/v2/server/report" {
 			return &reportResultError{stage: "non-success response", status: resp.StatusCode}
 		}
-		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return fmt.Errorf("status %d: %s", resp.StatusCode, respBody)
+		return fmt.Errorf("status %d", resp.StatusCode)
 	}
 	// An HTTP 200 alone is not an accounting receipt. Older XBoard
 	// deployments sometimes return an empty body, so preserve that
@@ -499,7 +494,7 @@ func (c *Client) doRequest(method, path string, body []byte, ifNoneMatch string)
 
 	req, err := http.NewRequest(method, fullURL, bodyReader)
 	if err != nil {
-		return nil, err
+		return nil, safePanelTransportError(err)
 	}
 
 	req.Header.Set("Content-Type", "application/json")
@@ -513,7 +508,7 @@ func (c *Client) doRequest(method, path string, body []byte, ifNoneMatch string)
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		c.apiFailure.Add(1)
-		return nil, err
+		return nil, safePanelTransportError(err)
 	}
 
 	if resp.StatusCode >= 200 && resp.StatusCode < 400 {
