@@ -737,23 +737,38 @@ install_staged_files() {
     systemctl enable "$SERVICE_NAME" > /dev/null 2>&1
 }
 
+# Require several consecutive healthy observations of the same process.
+# A restart during verification is an installation failure, even if systemd
+# has already brought the service back by the next poll.
+service_identity() {
+    local state pid restarts
+    state=$(systemctl show "$SERVICE_NAME" -p ActiveState --value) || return 1
+    pid=$(systemctl show "$SERVICE_NAME" -p MainPID --value) || return 1
+    restarts=$(systemctl show "$SERVICE_NAME" -p NRestarts --value) || return 1
+    [[ "$state" == active && "$pid" =~ ^[1-9][0-9]*$ && "$restarts" =~ ^[0-9]+$ ]] || return 1
+    printf '%s:%s\n' "$pid" "$restarts"
+}
+
 wait_for_health() {
-    if ! systemctl is-active "$SERVICE_NAME" >/dev/null 2>&1; then
-        return 1
-    fi
-    if [ "$HEALTH_ENABLED" -eq 0 ]; then
-        return 0
-    fi
-    local attempt=0
-    local max_attempts=30
-    while [ "$attempt" -lt "$max_attempts" ]; do
-        if ! systemctl is-active "$SERVICE_NAME" >/dev/null 2>&1; then
+    local identity current attempt=0 consecutive=0
+    identity=$(service_identity) || return 1
+    while [ "$attempt" -lt 30 ]; do
+        current=$(service_identity) || return 1
+        if [ "$current" != "$identity" ]; then
+            log_error "Service restarted during health verification"
             return 1
         fi
-        if curl -fsS --connect-timeout 1 --max-time 2 "http://127.0.0.1:${HEALTH_PORT}/healthz" >/dev/null 2>&1; then
+        if [ "$HEALTH_ENABLED" -eq 0 ] || curl -fsS --connect-timeout 1 --max-time 2 "http://127.0.0.1:${HEALTH_PORT}/healthz" >/dev/null 2>&1; then
+            consecutive=$((consecutive + 1))
+        else
+            consecutive=0
+        fi
+        if [ "$consecutive" -ge 5 ]; then
+            current=$(service_identity) || return 1
+            [ "$current" = "$identity" ] || return 1
             return 0
         fi
-        sleep 1
+        sleep 2
         attempt=$((attempt + 1))
     done
     return 1

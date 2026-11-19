@@ -101,4 +101,39 @@ done
     fi
     test ! -e "$TMP_DIR/unexpected-systemctl"
 )
+# Simulate healthy service, startup crash, and recovered restart.
+# Counts use files because command substitutions run in subshells.
+(
+    trap - EXIT
+    HEALTH_ENABLED=0
+    sleep() { :; }
+    service_identity() { printf '42:0\n'; }
+    wait_for_health
+    counter="$TMP_DIR/health-counter"
+    printf 0 > "$counter"
+    service_identity() {
+        local n
+        n=$(cat "$counter")
+        printf '%s' "$((n+1))" > "$counter"
+        if [ "$n" -lt 3 ]; then printf '42:0\n'; else printf '43:1\n'; fi
+    }
+    if wait_for_health; then
+        echo 'restarted service accepted' >&2
+        exit 1
+    fi
+    service_identity() { return 1; }
+    if wait_for_health; then
+        echo 'inactive service accepted' >&2
+        exit 1
+    fi
+    HEALTH_ENABLED=1
+    service_identity() { printf '42:0\n'; }
+    curl() { return 1; }
+    if wait_for_health; then
+        echo 'unhealthy endpoint accepted' >&2
+        exit 1
+    fi
+    curl() { return 0; }
+    wait_for_health
+)
 echo 'Installer safety checks passed'
