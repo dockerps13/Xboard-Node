@@ -116,7 +116,7 @@ jobs:
           retention-days: 7
 
 
-  publish-v1.0.0:
+  publish-v100:
     name: Publish verified V1.0.0
     needs: test
     if: github.event_name == 'push' && github.ref == 'refs/heads/feature/autokernel-stage1' && contains(github.event.head_commit.message, '[publish-v1.0.0]') && contains(github.event.head_commit.message, '[full-ci]')
