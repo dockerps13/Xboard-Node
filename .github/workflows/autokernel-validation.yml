@@ -91,7 +91,7 @@ jobs:
       - name: Build release candidate binaries
         if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[full-ci]')
         run: |
-          make build-linux build-linux-arm64 VERSION=v1.0.0-rc.6-${GITHUB_SHA:0:12}
+          make build-linux build-linux-arm64 VERSION=v1.0.0-rc.7-${GITHUB_SHA:0:12}
           mkdir -p dist
           cp xboard-node-linux-amd64 xboard-node-linux-arm64 xbctl-linux-amd64 xbctl-linux-arm64 dist/
           cp install.sh dist/install.sh
@@ -100,7 +100,7 @@ jobs:
       - name: Smoke test native release binaries
         if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[full-ci]')
         run: |
-          ./dist/xboard-node-linux-amd64 -v | grep -F "v1.0.0-rc.6-${GITHUB_SHA:0:12}"
+          ./dist/xboard-node-linux-amd64 -v | grep -F "v1.0.0-rc.7-${GITHUB_SHA:0:12}"
           ./dist/xboard-node-linux-amd64 --help
           ./dist/xbctl-linux-amd64 --help
           bash -n install.sh
@@ -114,10 +114,10 @@ jobs:
           retention-days: 7
 
 
-  publish-rc6:
-    name: Publish verified RC.6 candidate
+  publish-rc7:
+    name: Publish verified RC.7 candidate
     needs: test
-    if: github.event_name == 'push' && github.ref == 'refs/heads/feature/autokernel-stage1' && contains(github.event.head_commit.message, '[publish-rc6]') && contains(github.event.head_commit.message, '[full-ci]')
+    if: github.event_name == 'push' && github.ref == 'refs/heads/feature/autokernel-stage1' && contains(github.event.head_commit.message, '[publish-rc7]') && contains(github.event.head_commit.message, '[full-ci]')
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -139,9 +139,9 @@ jobs:
           for f in xboard-node-linux-amd64 xboard-node-linux-arm64 xbctl-linux-amd64 xbctl-linux-arm64 install.sh; do test -s "$f"; done
           bash -n install.sh
           chmod +x xboard-node-linux-amd64
-          ./xboard-node-linux-amd64 -v | grep -F "v1.0.0-rc.6-${GITHUB_SHA:0:12}"
-          if gh release view v1.0.0-rc.6 >/dev/null 2>&1; then
-            echo "RC.6 already exists; refusing to overwrite"
+          ./xboard-node-linux-amd64 -v | grep -F "v1.0.0-rc.7-${GITHUB_SHA:0:12}"
+          if gh release view v1.0.0-rc.7 >/dev/null 2>&1; then
+            echo "RC.7 already exists; refusing to overwrite"
             exit 1
           fi
-          gh release create v1.0.0-rc.6 SHA256SUMS SOURCE_COMMIT install.sh xboard-node-linux-amd64 xboard-node-linux-arm64 xbctl-linux-amd64 xbctl-linux-arm64 --target "$GITHUB_SHA" --prerelease --latest=false --title "V1.0.0 RC.6" --notes "Final engineering candidate from workflow ${GITHUB_RUN_ID}, commit ${GITHUB_SHA}. Includes installer locking, backup checksums, startup stability checks, credential file protection, protocol validation and recovery regression tests. RC.5 field evidence does not automatically qualify RC.6. Real upgrade/rollback, API recovery, cross-node validation and 24-hour staging acceptance remain required. Distributed atomic device admission remains experimental."
+          gh release create v1.0.0-rc.7 SHA256SUMS SOURCE_COMMIT install.sh xboard-node-linux-amd64 xboard-node-linux-arm64 xbctl-linux-amd64 xbctl-linux-arm64 --target "$GITHUB_SHA" --prerelease --latest=false --title "V1.0.0 RC.7" --notes "Security and reliability candidate from workflow ${GITHUB_RUN_ID}, commit ${GITHUB_SHA}. Suppresses credential-bearing panel diagnostics and durably retries proven-unsent legacy traffic reports. Ambiguous report outcomes and historical audit batches still require manual reconciliation. RC.6 field evidence does not automatically qualify RC.7. Real API recovery, ledger verification, upgrade/rollback, restart, cross-node validation and 24-hour staging acceptance remain required. Rotate previously exposed credentials. Distributed atomic device admission remains experimental."
