@@ -129,3 +129,10 @@ func TestRemovedUserClosesOnlyTheirConnections(t *testing.T) {
 	tracker.RoutedConnection(context.Background(), late, testInboundContext("removed", "192.0.2.3"), nil, nil)
 	if !late.closed || tracker.ActiveCount() != 1 { t.Fatal("removed user re-admitted") }
 }
+
+func TestLimitedTCPDoesNotAdvertiseReplaceableIO(t *testing.T) {
+	conn := &trackedConn{limiter: rate.NewLimiter(100, 10)}
+	if conn.ReaderReplaceable() || conn.WriterReplaceable() {
+		t.Fatal("limited TCP path must not advertise replaceable I/O")
+	}
+}
