@@ -788,6 +788,11 @@ func (c *Config) ExpandNodes() []*Config {
 		if nodeCfg.Cert.CertDir == "" {
 			nodeCfg.Cert.CertDir = filepath.Join(nodeCfg.Kernel.ConfigDir, "certs")
 		}
+		// All nodes expanded from one ordinary multi-node instance share the
+		// machine-local ACME account and certificate store. Keep each node's
+		// cert_dir separate for legacy file persistence, while making ACME
+		// obtain/renewal storage common just like machine mode.
+		nodeCfg.Cert.ACMEStorageDir = filepath.Join(c.Kernel.ConfigDir, "shared-acme")
 
 		result = append(result, &nodeCfg)
 	}

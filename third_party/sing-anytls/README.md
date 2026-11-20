@@ -13,3 +13,9 @@ wire-format behavior is changed. Revisit the replacement when the upstream
 project ships equivalent race fixes; until then, keep this directory pinned
 to the recorded upstream commit and rerun the node's negative-auth and race
 tests before upgrading it.
+
+The fork is distributed under the GPLv3-or-later terms in `LICENSE`. The full
+fork source is kept in this repository and is selected by the root module's
+`replace github.com/anytls/sing-anytls => ./third_party/sing-anytls`; releases
+must keep this source and license alongside the binaries. Do not replace it
+with an unreviewed prebuilt AnyTLS binary.

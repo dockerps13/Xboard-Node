@@ -410,6 +410,29 @@ func TestConfig_AutoInstanceIDStable(t *testing.T) {
 	}
 }
 
+func TestExpandNodesSharesACMEStorage(t *testing.T) {
+	cfg := &Config{
+		Kernel: KernelConfig{ConfigDir: "/var/lib/xboard"},
+		Cert:   CertConfig{CertMode: "http", Domain: "shared.example.test"},
+		Nodes: []NodeEntry{
+			{NodeID: 11},
+			{NodeID: 12},
+		},
+	}
+
+	nodes := cfg.ExpandNodes()
+	if len(nodes) != 2 {
+		t.Fatalf("expanded nodes = %d, want 2", len(nodes))
+	}
+	wantShared := filepath.Join(cfg.Kernel.ConfigDir, "shared-acme")
+	if nodes[0].Cert.ACMEStorageDir != wantShared || nodes[1].Cert.ACMEStorageDir != wantShared {
+		t.Fatalf("shared ACME storage: %q, %q; want %q", nodes[0].Cert.ACMEStorageDir, nodes[1].Cert.ACMEStorageDir, wantShared)
+	}
+	if nodes[0].Cert.CertDir == nodes[1].Cert.CertDir {
+		t.Fatalf("per-node cert directories must remain distinct: %q", nodes[0].Cert.CertDir)
+	}
+}
+
 func TestLoadRoot_InheritanceFromTopLevel(t *testing.T) {
 	path := writeTemp(t, `
 log:

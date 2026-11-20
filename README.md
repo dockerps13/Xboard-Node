@@ -6,7 +6,8 @@ Node backend for [Xboard](https://github.com/cedar2025/Xboard). Supports `sing-b
 
 ## Features
 
-- Protocols: V2Ray family, Trojan, Shadowsocks, Hysteria2, TUIC, AnyTLS
+- Protocols: VLESS/VMess, Trojan, Shadowsocks, Hysteria2, TUIC, SOCKS5,
+  HTTP/HTTPS, AnyTLS, Mieru, and Naive (kernel/client support varies)
 - Sync: WebSocket push + REST polling dual channel
 - User controls: speed limit, device limit, alive-IP tracking, hot update
 - Deploy modes: node mode, machine mode, standalone mode
@@ -16,7 +17,7 @@ Node backend for [Xboard](https://github.com/cedar2025/Xboard). Supports `sing-b
 
 This fork's Linux systemd releases are published at [dockerps13/Xboard-Node Releases](https://github.com/dockerps13/Xboard-Node/releases). See the [deployment and operations guide](docs/deployment.md) for pinned version installation, upgrade, backup, rollback and troubleshooting.
 
-**Current release status:** RC.5 is a prerelease, not v1.0.0 stable. The development branch includes additional changes that are not in the published RC.5 binaries. Use an exact release version and matching installer source. Do not use a moving branch or the upstream Docker image as a substitute for a validated release of this fork.
+**Current release status:** V1.0.1 is in final release preparation and has not been published. V1.0.0 remains the production baseline. Do not install from a moving branch, use `latest`, or treat the upstream Docker image as a validated V1.0.1 build. After approval, use the exact V1.0.1 tag together with its `SOURCE_COMMIT` and `SHA256SUMS`.
 
 Docker examples from the upstream project are not release-validated deployment instructions for this fork.
 

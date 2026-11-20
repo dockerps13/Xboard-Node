@@ -60,7 +60,6 @@ jobs:
         working-directory: third_party/sing-anytls
         run: go test -race ./...
       - name: Naive real client interoperability (test-only build)
-        if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[full-ci]')
         env:
           CGO_ENABLED: "0"
         run: |

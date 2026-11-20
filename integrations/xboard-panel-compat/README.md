@@ -20,8 +20,11 @@ the panel's existing wire names:
 | `protocol_settings.tls.server_name` | `tls_settings.server_name` | Preserve SNI independently of the node listen address. |
 | `cert_config` | `cert_config` | Preserve `mode`/`cert_mode` compatibility and fail closed when material is unavailable. |
 
-Before deploying against the production panel, compare its local changes with
-the upstream commit above and verify that:
+The complete patch is directly applicable to that upstream commit. It changes
+`ServerService`, `AbstractProtocol`, `ClientController`, adds the two
+compatibility classes, and adds PHPUnit snapshot/unit coverage. Before
+deploying against the production panel, compare its local changes with the
+upstream commit above and verify that:
 
 1. `ServerService::buildNodeConfig` returns the fields in the table without
    dropping `padding_scheme`, `transport`, `traffic_pattern`, or
@@ -37,28 +40,29 @@ the upstream commit above and verify that:
    report mode enabled.
 
 The node implementation and tests in this repository are the compatible
-patch. The actual panel source patch is
-`patches/0001-xboard-node-v101-protocol-compat.patch`; it adds
-`App\Support\XboardNodeV101Compatibility` to the panel checkout. No
-production panel files were changed in the cloud environment.
+patch. No production panel files were changed in the cloud environment.
 
-Apply the helper at these panel call sites after reviewing the local panel
-customizations:
+Apply and review it in a disposable or separately backed-up panel checkout:
 
-- Call `normalizeNodeConfig()` in `ServerService::buildNodeConfig()` before
-  returning the node payload, preserving `mode`/`cert_mode`, AnyTLS
-  `padding_scheme`, and Mieru `transport`/`traffic_pattern`.
-- Call `credential()` in each builder that emits an AnyTLS, Naive, Mieru,
-  SOCKS, or HTTP credential. Use the returned UUID as the protocol password;
-  do not substitute a node-wide password.
-- Call `tls()` for HTTP/HTTPS, Naive, SOCKS-over-TLS, and AnyTLS client
-  entries. Emit `insecure: true`/`skip-cert-verify: true` only when
-  `tls.allow_insecure` is explicitly true.
-- Call `assertSupported()` before a builder returns a subscription. Return a
-  clear HTTP 422 listing unsupported protocol types instead of silently
-  dropping or converting them. This is especially important for classic
-  Clash, Surge, Shadowrocket, and General, whose protocol support differs.
+```bash
+git checkout d826a3b32f73bde24acce2a3ab033c6538ce121d
+git apply --check /path/to/0001-xboard-node-v101-protocol-compat.patch
+git apply /path/to/0001-xboard-node-v101-protocol-compat.patch
+php -l app/Support/XboardNodeV101Compatibility.php
+php -l app/Support/XboardNodeV101UnsupportedProtocolException.php
+php artisan test tests/Unit/Support/XboardNodeV101CompatibilityTest.php
+```
 
-The patch is intentionally independent of the upstream repository and does
-not change its code automatically. Validate it against the production panel
-checkout before deployment.
+The patch's `AbstractProtocol` gate is inherited by Shadowrocket, ClashMeta,
+SingBox, Surge, General, and the other protocol generators. It validates the
+UUID credential and calls `assertSupported()` before any generator can drop a
+node. Existing TLS builders preserve certificate verification by default and
+only emit their client-specific insecure flag when the panel explicitly sets
+`allow_insecure`. Unsupported combinations return HTTP 422 with protocol
+names. To roll back this independent patch before deployment, run
+`git apply -R` with the same patch after confirming the checkout has no
+overlapping local edits.
+
+The production checkout `/www/wwwroot/soulook.org` was not available to this
+review and was not modified. Its local form customizations, database schema,
+and deployed panel version remain unverified; compare them before applying.
