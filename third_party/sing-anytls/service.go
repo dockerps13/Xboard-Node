@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net"
 	"os"
+	"sync"
 
 	"github.com/anytls/sing-anytls/padding"
 	"github.com/anytls/sing-anytls/session"
@@ -21,6 +22,7 @@ import (
 )
 
 type Service struct {
+	usersMu         sync.RWMutex
 	users           map[[32]byte]string
 	padding         atomic.TypedValue[*padding.PaddingFactory]
 	handler         N.TCPConnectionHandlerEx
@@ -69,7 +71,9 @@ func (s *Service) UpdateUsers(users []User) {
 	for _, user := range users {
 		u[sha256.Sum256([]byte(user.Password))] = user.Name
 	}
+	s.usersMu.Lock()
 	s.users = u
+	s.usersMu.Unlock()
 }
 
 // NewConnection `conn` should be plaintext
@@ -90,7 +94,10 @@ func (s *Service) NewConnection(ctx context.Context, conn net.Conn, source M.Soc
 	}
 	var passwordSha256 [32]byte
 	copy(passwordSha256[:], by)
-	if user, ok := s.users[passwordSha256]; ok {
+	s.usersMu.RLock()
+	user, ok := s.users[passwordSha256]
+	s.usersMu.RUnlock()
+	if ok {
 		ctx = auth.ContextWithUser(ctx, user)
 	} else {
 		b.Resize(0, n)

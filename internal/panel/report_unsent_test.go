@@ -13,7 +13,9 @@ func TestReportDialFailureIsUnsent(t *testing.T) {
 	ts.Close()
 	c := NewClient(config.PanelConfig{URL: ts.URL, Token: "secret", MachineID: 24, NodeID: 14})
 	err := c.postJSON("/api/v2/server/report", map[string]interface{}{})
-	if !IsReportNotSent(err) { t.Fatalf("expected unsent classification: %v", err) }
+	if !IsReportNotSent(err) {
+		t.Fatalf("expected unsent classification: %v", err)
+	}
 }
 
 func TestReportHTTPFailureIsAmbiguous(t *testing.T) {
@@ -23,5 +25,7 @@ func TestReportHTTPFailureIsAmbiguous(t *testing.T) {
 	defer ts.Close()
 	c := NewClient(config.PanelConfig{URL: ts.URL, Token: "secret", MachineID: 24, NodeID: 14})
 	err := c.postJSON("/api/v2/server/report", map[string]interface{}{})
-	if err == nil || IsReportNotSent(err) { t.Fatalf("expected ambiguous failure: %v", err) }
+	if err == nil || IsReportNotSent(err) {
+		t.Fatalf("expected ambiguous failure: %v", err)
+	}
 }

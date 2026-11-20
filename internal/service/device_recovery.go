@@ -15,7 +15,7 @@ import (
 // deviceReportState records only user IDs potentially present on the panel.
 // All calls are serialized by the service's single-flight report path.
 type deviceReportState struct {
-	path string
+	path  string
 	users map[int]bool
 }
 
@@ -25,7 +25,7 @@ func openDeviceReportState(cfg *config.Config) (*deviceReportState, error) {
 		return nil, err
 	}
 	d := &deviceReportState{
-		path: filepath.Join(cfg.Kernel.ConfigDir, fmt.Sprintf("device-recovery-%x.json", scope)),
+		path:  filepath.Join(cfg.Kernel.ConfigDir, fmt.Sprintf("device-recovery-%x.json", scope)),
 		users: make(map[int]bool),
 	}
 	raw, err := os.ReadFile(d.path)

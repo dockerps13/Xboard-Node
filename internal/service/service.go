@@ -33,17 +33,17 @@ import (
 )
 
 type Service struct {
-	cfg          *config.Config
-	source       controlplane.Source
-	sink         controlplane.Sink
-	kernel       kernel.Kernel
-	tracker      *tracker.Tracker
+	cfg     *config.Config
+	source  controlplane.Source
+	sink    controlplane.Sink
+	kernel  kernel.Kernel
+	tracker *tracker.Tracker
 	// Enabled only when the panel advertises durable report-ID deduplication.
 	reportJournal *reportjournal.Journal
-	deviceState *deviceReportState
-	limiter      *limiter.Limiter
-	speedTracker *limiter.SpeedTracker
-	cert         *cert.Manager
+	deviceState   *deviceReportState
+	limiter       *limiter.Limiter
+	speedTracker  *limiter.SpeedTracker
+	cert          *cert.Manager
 
 	certApplyFailed bool // main-loop owned; do not serve TLS with stale or absent material
 
@@ -98,6 +98,8 @@ type pullResult struct {
 	userHash    string
 	certChanged bool
 }
+
+const certificateRecoveryInterval = 15 * time.Second
 
 // apiBackoff implements simple exponential backoff for API failures.
 type apiBackoff struct {
@@ -183,7 +185,12 @@ func newService(cfg *config.Config, cp controlplane.ControlPlane) *Service {
 func (s *Service) Run(ctx context.Context) error {
 	// Start cert manager (handles auto-TLS or manual cert verification)
 	if err := s.cert.Start(ctx); err != nil {
-		return fmt.Errorf("cert manager: %w", err)
+		// A temporary ACME/DNS/file failure must not turn a TLS node into a
+		// process crash loop.  Keep the listener disabled and let the main loop
+		// retry; startKernel and canServeTLS make the no-certificate state
+		// fail closed.
+		s.certApplyFailed = true
+		nlog.Core().Error("cert manager unavailable; TLS listener disabled until recovery", "error", err)
 	}
 	defer s.cert.Stop()
 
@@ -222,6 +229,7 @@ func (s *Service) Run(ctx context.Context) error {
 	reportTicker := time.NewTicker(pushInterval)
 	pullTicker := time.NewTicker(pullInterval)
 	deviceReportTicker := time.NewTicker(time.Duration(s.cfg.Node.DeviceReportInterval) * time.Second)
+	certRecoveryTicker := time.NewTicker(certificateRecoveryInterval)
 
 	// WS discovery: when in REST-only mode, periodically re-handshake to check
 	// if WS has been enabled. When WS is disconnected for too long, re-check
@@ -232,6 +240,7 @@ func (s *Service) Run(ctx context.Context) error {
 	defer reportTicker.Stop()
 	defer pullTicker.Stop()
 	defer deviceReportTicker.Stop()
+	defer certRecoveryTicker.Stop()
 	defer wsDiscoveryTicker.Stop()
 
 	s.startWSClient(ctx)
@@ -263,6 +272,9 @@ func (s *Service) Run(ctx context.Context) error {
 
 		case <-deviceReportTicker.C:
 			s.reportDevices()
+
+		case <-certRecoveryTicker.C:
+			s.handleCertificateState(ctx)
 
 		case <-pullTicker.C:
 			// When WebSocket is connected, skip REST polling entirely.
@@ -346,7 +358,15 @@ func (s *Service) initialSetup(ctx context.Context) error {
 		return fmt.Errorf("initial config is nil")
 	}
 	if err := validateNodeRuntime(s.cfg, s.kernel.Protocols(), bootstrap.Config, s.cert.TLSCert()); err != nil {
-		return err
+		// The protocol and its non-certificate settings are still validated.
+		// Only the temporary missing-material error is deferred so the service
+		// can recover after ACME/file material becomes available.
+		pendingCert := s.certApplyFailed && requiresCertificate(bootstrap.Config) &&
+			!s.cert.HasCert() && strings.HasSuffix(err.Error(), "requires TLS certificate files")
+		if !pendingCert {
+			return err
+		}
+		nlog.Core().Warn("initial TLS listener deferred until certificate recovery", "error", err)
 	}
 
 	s.metricsMu.Lock()
@@ -369,6 +389,11 @@ func (s *Service) initialSetup(ctx context.Context) error {
 
 	s.applyRemoteOverrides(ctx, bootstrap.Config)
 	if !s.startKernel(bootstrap.Config, bootstrap.Users) {
+		if requiresCertificate(bootstrap.Config) && !s.cert.HasCert() {
+			nlog.Core().Warn("initial TLS listener disabled until certificate recovery")
+			s.markMailboxReadyAndDrain(ctx)
+			return nil
+		}
 		return fmt.Errorf("start kernel")
 	}
 	if bootstrap.DeviceUsers != nil && (s.wsClient == nil || !s.wsClient.IsConnected()) {
@@ -438,6 +463,42 @@ func (s *Service) applyNodeCert(ctx context.Context, newCfg *config.CertConfig) 
 		}
 	}
 	return changed
+}
+
+// handleCertificateState is the main-loop owner of certificate recovery.
+// ACME renewal callbacks atomically refresh Manager material and set the
+// renewed flag.  A recovery retry can also populate material after a
+// transient startup or runtime failure.  In both cases the kernel must be
+// restarted/reloaded with the new PEM before TLS traffic is accepted.
+func (s *Service) handleCertificateState(ctx context.Context) {
+	if s.cert == nil {
+		return
+	}
+
+	renewed := s.cert.CertRenewed()
+	recovered := false
+	if s.certApplyFailed || (s.lastConfig != nil && requiresCertificate(s.lastConfig) && !s.cert.HasCert()) {
+		if err := s.cert.Start(ctx); err != nil {
+			nlog.Core().Debug("certificate recovery retry failed", "error", err)
+			return
+		}
+		s.certApplyFailed = false
+		recovered = true
+	}
+	if !renewed && !recovered {
+		return
+	}
+	if s.lastConfig == nil || len(s.lastUsers) == 0 || !s.canServeTLS(s.lastConfig) {
+		return
+	}
+
+	if s.kernel.IsRunning() {
+		// applyChanges deliberately snapshots traffic before replacing the TLS
+		// listener, preserving accounting across a certificate hot reload.
+		s.applyChanges(ctx, true, false)
+	} else if !s.startKernel(s.lastConfig, s.lastUsers) {
+		nlog.Core().Warn("certificate recovered but listener restart failed")
+	}
 }
 
 // startWSClient starts the push client goroutine if a client is configured.
@@ -1180,7 +1241,9 @@ func reportTrafficTotals(traffic map[int][2]int64) (up, down uint64) {
 // The local record is for operator reconciliation, never automatic replay.
 func (s *Service) reportLegacy(payload controlplane.ReportPayload) error {
 	if len(payload.Traffic) == 0 {
-		if err := s.sink.Report(payload); err != nil { return err }
+		if err := s.sink.Report(payload); err != nil {
+			return err
+		}
 		return s.retryLegacyUnsent(payload)
 	}
 	if s.cfg == nil || s.cfg.Kernel.ConfigDir == "" {
@@ -1630,23 +1693,37 @@ func stringValue(v any) string {
 // retryLegacyUnsent drains at most four proven-unsent batches after a fresh
 // report succeeds. No previous ambiguous audit record is replayed.
 func (s *Service) retryLegacyUnsent(payload controlplane.ReportPayload) error {
-	if s.cfg == nil || s.cfg.Kernel.ConfigDir == "" { return nil }
+	if s.cfg == nil || s.cfg.Kernel.ConfigDir == "" {
+		return nil
+	}
 	j, err := reportjournal.Open(filepath.Join(s.cfg.Kernel.ConfigDir, "unconfirmed-reports"))
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	batches, err := j.LegacyRetryable()
-	if err != nil { return err }
-	if len(batches) > 4 { batches = batches[:4] }
+	if err != nil {
+		return err
+	}
+	if len(batches) > 4 {
+		batches = batches[:4]
+	}
 	for _, batch := range batches {
-		if err := j.BeginLegacyRetry(batch.ID); err != nil { return err }
+		if err := j.BeginLegacyRetry(batch.ID); err != nil {
+			return err
+		}
 		attempt := payload
 		attempt.Traffic = batch.Traffic
 		if err := s.sink.Report(attempt); err != nil {
 			if panel.IsReportNotSent(err) {
-				if markErr := j.MarkLegacyRetryable(batch.ID); markErr != nil { return markErr }
+				if markErr := j.MarkLegacyRetryable(batch.ID); markErr != nil {
+					return markErr
+				}
 			}
 			return fmt.Errorf("legacy retry batch %s: %w", batch.ID, err)
 		}
-		if err := j.RemoveLegacyAudit(batch.ID); err != nil { return err }
+		if err := j.RemoveLegacyAudit(batch.ID); err != nil {
+			return err
+		}
 		nlog.Core().Info("proven-unsent legacy traffic batch recovered", "batch_id", batch.ID)
 	}
 	return nil

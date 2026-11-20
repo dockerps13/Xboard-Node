@@ -256,11 +256,15 @@ func TestOfflineNoticeRetriedUntilAcknowledged(t *testing.T) {
 	tr.FlushWSAliveIPs()
 	for i := 0; i < 2; i++ {
 		out := tr.FlushAliveIPs()
-		if out[1] == nil || len(out[1]) != 0 { t.Fatalf("missing explicit empty slice: %v", out) }
+		if out[1] == nil || len(out[1]) != 0 {
+			t.Fatalf("missing explicit empty slice: %v", out)
+		}
 		tr.RestoreAliveIPs(out)
 	}
 	tr.AcknowledgeAliveIPs(tr.FlushAliveIPs())
-	if len(tr.FlushAliveIPs()) != 0 { t.Fatal("acknowledged offline notice retained") }
+	if len(tr.FlushAliveIPs()) != 0 {
+		t.Fatal("acknowledged offline notice retained")
+	}
 }
 
 func TestCanonicalDeviceAddressesAcrossNodes(t *testing.T) {
@@ -269,14 +273,15 @@ func TestCanonicalDeviceAddressesAcrossNodes(t *testing.T) {
 	b.Process(nil, map[int]map[string]bool{1: {"192.0.2.1:1234": true, "2001:0db8:0:0::1": true, "[2001:db8::1]:443": true}}, 3)
 	// Mirror the panel's per-user union of canonical IP strings.
 	union := map[string]bool{}
-	for _, tr := range []*Tracker{a,b} {
-		for _, ip := range tr.FlushAliveIPs()[1] { union[ip] = true }
+	for _, tr := range []*Tracker{a, b} {
+		for _, ip := range tr.FlushAliveIPs()[1] {
+			union[ip] = true
+		}
 	}
 	if len(union) != 2 || !union["192.0.2.1"] || !union["2001:db8::1"] {
 		t.Fatalf("incorrect cross-node union: %v", union)
 	}
 }
-
 
 func TestClearLiveDevicesPreservesTrafficAndOfflineNotice(t *testing.T) {
 	tr := New()

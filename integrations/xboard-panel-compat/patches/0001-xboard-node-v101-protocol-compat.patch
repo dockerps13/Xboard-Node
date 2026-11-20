@@ -1,0 +1,103 @@
+From 79a8adc91eda8711fb8713652842ae9e331136ec Mon Sep 17 00:00:00 2001
+Subject: [PATCH] xboard-node v1.0.1 protocol field compatibility
+
+Apply this patch to the panel checkout at the documented upstream commit.
+It adds a small framework-independent compatibility helper. The panel's
+ServerService and subscription protocol classes should call the helper at the
+documented call sites in the accompanying README.
+
+diff --git a/app/Support/XboardNodeV101Compatibility.php b/app/Support/XboardNodeV101Compatibility.php
+new file mode 100644
+index 0000000..6b7a4f5
+--- /dev/null
++++ b/app/Support/XboardNodeV101Compatibility.php
+@@ -0,0 +1,112 @@
++<?php
++
++namespace App\Support;
++
++use InvalidArgumentException;
++
++/**
++ * Wire-level guardrails shared by Xboard-Node V1.0.1 integrations.
++ *
++ * This helper deliberately does not silently turn an unsupported protocol
++ * into HTTP, SOCKS, or a generic multiplex entry. Callers should invoke
++ * assertSupported() before building a subscription and return a clear 4xx
++ * response when it throws.
++ */
++final class XboardNodeV101Compatibility
++{
++    public static function normalizeNodeConfig(array $config): array
++    {
++        if (isset($config['cert_config']) && is_array($config['cert_config'])) {
++            $cert = $config['cert_config'];
++            if (isset($cert['mode']) && !isset($cert['cert_mode'])) {
++                $cert['cert_mode'] = $cert['mode'];
++            }
++            unset($cert['mode']);
++            $config['cert_config'] = $cert;
++        }
++
++        if (isset($config['padding_scheme']) && is_string($config['padding_scheme'])) {
++            $config['padding_scheme'] = [$config['padding_scheme']];
++        }
++        if (isset($config['transport'])) {
++            $config['transport'] = strtoupper((string) $config['transport']);
++        }
++        if (isset($config['traffic_pattern'])) {
++            $config['traffic_pattern'] = (string) $config['traffic_pattern'];
++        }
++
++        return $config;
++    }
++
++    public static function tls(array $settings): array
++    {
++        $enabled = (int) ($settings['tls'] ?? 0) === 1;
++        if (!$enabled) {
++            return ['enabled' => false];
++        }
++
++        $tls = is_array($settings['tls_settings'] ?? null)
++            ? $settings['tls_settings']
++            : [];
++        $result = [
++            'enabled' => true,
++            // Certificate verification stays enabled unless the operator
++            // explicitly selected allow_insecure in the panel.
++            'insecure' => (bool) ($tls['allow_insecure'] ?? false),
++        ];
++        if (!empty($tls['server_name'])) {
++            $result['server_name'] = (string) $tls['server_name'];
++        }
++        return $result;
++    }
++
++    public static function credential(array $user): string
++    {
++        $uuid = trim((string) ($user['uuid'] ?? ''));
++        if ($uuid === '') {
++            throw new InvalidArgumentException('Xboard-Node V1.0.1 requires a non-empty user uuid');
++        }
++        return $uuid;
++    }
++
++    public static function assertSupported(string $client, array $servers, array $supported): void
++    {
++        $unsupported = [];
++        foreach ($servers as $server) {
++            $type = (string) ($server['type'] ?? '');
++            if ($type !== '' && !in_array($type, $supported, true)) {
++                $unsupported[$type] = true;
++            }
++        }
++        if ($unsupported !== []) {
++            throw new InvalidArgumentException(sprintf(
++                'subscription client %s does not support protocol(s): %s',
++                $client,
++                implode(', ', array_keys($unsupported))
++            ));
++        }
++    }
++}

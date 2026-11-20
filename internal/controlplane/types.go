@@ -35,20 +35,20 @@ type APIMetrics struct {
 }
 
 type Bootstrap struct {
-	DeviceUsers map[int][]string
+	DeviceUsers       map[int][]string
 	IdempotentReports bool // panel explicitly confirms atomic report-ID deduplication
-	PushInterval int
-	PullInterval int
-	Push         PushClient
-	Config       *model.NodeSpec
-	Users        []model.UserSpec
-	Mailbox      *NodeMailbox
+	PushInterval      int
+	PullInterval      int
+	Push              PushClient
+	Config            *model.NodeSpec
+	Users             []model.UserSpec
+	Mailbox           *NodeMailbox
 }
 
 type Snapshot struct {
 	DeviceUsers map[int][]string
-	Config *model.NodeSpec
-	Users  []model.UserSpec
+	Config      *model.NodeSpec
+	Users       []model.UserSpec
 }
 
 type ReportPayload struct {

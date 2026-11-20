@@ -32,10 +32,10 @@ func TestXBoardElevenProtocolsGenerateInbounds(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			node := testNodeSpec(&panel.NodeConfig{
-				Protocol: tc.protocol,
-				Version: tc.version,
+				Protocol:   tc.protocol,
+				Version:    tc.version,
 				ServerPort: 9000,
-				Cipher: "aes-128-gcm",
+				Cipher:     "aes-128-gcm",
 			})
 			got := buildInbound(node, testUsers, kernel.TLSCert{})
 			if got == nil {

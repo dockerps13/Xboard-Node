@@ -11,8 +11,8 @@ import (
 
 func TestReportExplicitNegativeReceipt(t *testing.T) {
 	for _, tc := range []struct {
-		name string
-		body string
+		name     string
+		body     string
 		rejected bool
 	}{
 		{"data_false", `{"data":false}`, true},

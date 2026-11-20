@@ -1,6 +1,7 @@
 package model
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/cedar2025/xboard-node/internal/config"
@@ -81,6 +82,32 @@ func TestValidateNodeSpecRejectsUnsupportedXHTTPProtocol(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+func TestValidateNodeSpecRejectsInvalidMieruOptions(t *testing.T) {
+	tests := []struct {
+		name string
+		node NodeSpec
+		want string
+	}{
+		{
+			name: "transport",
+			node: NodeSpec{Protocol: "mieru", Transport: "quic"},
+			want: "unsupported Mieru transport",
+		},
+		{
+			name: "traffic pattern",
+			node: NodeSpec{Protocol: "mieru", TrafficPattern: "not-base64"},
+			want: "invalid Mieru traffic_pattern",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := ValidateNodeSpec(&tc.node, config.KernelConfig{Type: "singbox"}); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("ValidateNodeSpec error=%v, want %q", err, tc.want)
+			}
+		})
 	}
 }
 

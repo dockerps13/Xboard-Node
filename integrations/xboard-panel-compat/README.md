@@ -37,4 +37,28 @@ the upstream commit above and verify that:
    report mode enabled.
 
 The node implementation and tests in this repository are the compatible
-patch. No production panel files were changed in the cloud environment.
+patch. The actual panel source patch is
+`patches/0001-xboard-node-v101-protocol-compat.patch`; it adds
+`App\Support\XboardNodeV101Compatibility` to the panel checkout. No
+production panel files were changed in the cloud environment.
+
+Apply the helper at these panel call sites after reviewing the local panel
+customizations:
+
+- Call `normalizeNodeConfig()` in `ServerService::buildNodeConfig()` before
+  returning the node payload, preserving `mode`/`cert_mode`, AnyTLS
+  `padding_scheme`, and Mieru `transport`/`traffic_pattern`.
+- Call `credential()` in each builder that emits an AnyTLS, Naive, Mieru,
+  SOCKS, or HTTP credential. Use the returned UUID as the protocol password;
+  do not substitute a node-wide password.
+- Call `tls()` for HTTP/HTTPS, Naive, SOCKS-over-TLS, and AnyTLS client
+  entries. Emit `insecure: true`/`skip-cert-verify: true` only when
+  `tls.allow_insecure` is explicitly true.
+- Call `assertSupported()` before a builder returns a subscription. Return a
+  clear HTTP 422 listing unsupported protocol types instead of silently
+  dropping or converting them. This is especially important for classic
+  Clash, Surge, Shadowrocket, and General, whose protocol support differs.
+
+The patch is intentionally independent of the upstream repository and does
+not change its code automatically. Validate it against the production panel
+checkout before deployment.

@@ -11,18 +11,20 @@ import (
 )
 
 type finalReportSink struct {
-	fail bool
+	fail    bool
 	reports []controlplane.ReportPayload
 }
 
 func (s *finalReportSink) Report(p controlplane.ReportPayload) error {
 	s.reports = append(s.reports, p)
-	if s.fail { return errors.New("panel unavailable") }
+	if s.fail {
+		return errors.New("panel unavailable")
+	}
 	return nil
 }
 func (s *finalReportSink) ReportDevices(controlplane.PushClient, map[int][]string) {}
-func (s *finalReportSink) SupportsReporting() bool { return true }
-func (s *finalReportSink) SupportsDeviceReports() bool { return false }
+func (s *finalReportSink) SupportsReporting() bool                                 { return true }
+func (s *finalReportSink) SupportsDeviceReports() bool                             { return false }
 
 func TestLegacyReportQuarantinesAmbiguousFailureWithoutReplay(t *testing.T) {
 	cfg := &config.Config{Kernel: config.KernelConfig{ConfigDir: t.TempDir()}}
@@ -32,12 +34,16 @@ func TestLegacyReportQuarantinesAmbiguousFailureWithoutReplay(t *testing.T) {
 	s.sink = sink
 	s.pushReportSync()
 	j, err := reportjournal.Open(filepath.Join(cfg.Kernel.ConfigDir, "unconfirmed-reports"))
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	pending, err := j.Pending()
 	if err != nil || len(pending) != 1 || pending[0].Traffic[12] != [2]int64{123, 456} {
 		t.Fatalf("audit = %+v, err=%v", pending, err)
 	}
-	if s.tracker.HasTraffic() { t.Fatal("ambiguous bytes must not be automatically replayed") }
+	if s.tracker.HasTraffic() {
+		t.Fatal("ambiguous bytes must not be automatically replayed")
+	}
 	s.tracker.Process(map[int][2]int64{12: {130, 460}}, nil, 0)
 	sink.fail = false
 	s.pushReportSync()
@@ -45,7 +51,9 @@ func TestLegacyReportQuarantinesAmbiguousFailureWithoutReplay(t *testing.T) {
 		t.Fatalf("unexpected second report: %+v", sink.reports)
 	}
 	pending, err = j.Pending()
-	if err != nil || len(pending) != 1 { t.Fatalf("audit lost: %+v %v", pending, err) }
+	if err != nil || len(pending) != 1 {
+		t.Fatalf("audit lost: %+v %v", pending, err)
+	}
 }
 
 func TestLegacyReportStorageFailurePreventsSend(t *testing.T) {
@@ -64,7 +72,9 @@ func TestJournalRetryPreservesBatchIdentityAcrossRestart(t *testing.T) {
 	cfg := &config.Config{Kernel: config.KernelConfig{ConfigDir: dir}}
 	first := newService(cfg, controlplane.NewLocalControlPlane(cfg))
 	j, err := reportjournal.Open(filepath.Join(dir, "reports"))
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	first.reportJournal = j
 	sink := &finalReportSink{fail: true}
 	first.sink = sink
@@ -78,10 +88,14 @@ func TestJournalRetryPreservesBatchIdentityAcrossRestart(t *testing.T) {
 	id := sink.reports[0].BatchID
 	second := newService(cfg, controlplane.NewLocalControlPlane(cfg))
 	second.reportJournal, err = reportjournal.Open(filepath.Join(dir, "reports"))
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	sink.fail = false
 	second.sink = sink
-	if err := second.reportWithJournal(controlplane.ReportPayload{}); err != nil { t.Fatal(err) }
+	if err := second.reportWithJournal(controlplane.ReportPayload{}); err != nil {
+		t.Fatal(err)
+	}
 	if len(sink.reports) != 2 || sink.reports[1].BatchID != id || sink.reports[1].Traffic[12] != [2]int64{123, 456} {
 		t.Fatalf("retry changed original batch: %+v", sink.reports)
 	}
@@ -95,19 +109,27 @@ func TestJournalBacklogDrainsAtBoundedRate(t *testing.T) {
 	cfg := &config.Config{Kernel: config.KernelConfig{ConfigDir: t.TempDir()}}
 	s := newService(cfg, controlplane.NewLocalControlPlane(cfg))
 	j, err := reportjournal.Open(filepath.Join(cfg.Kernel.ConfigDir, "reports"))
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	s.reportJournal = j
 	sink := &finalReportSink{}
 	s.sink = sink
 	for i := 0; i < 7; i++ {
-		if _, err := j.Append(map[int][2]int64{12: {1, 2}}); err != nil { t.Fatal(err) }
+		if _, err := j.Append(map[int][2]int64{12: {1, 2}}); err != nil {
+			t.Fatal(err)
+		}
 	}
-	if err := s.reportWithJournal(controlplane.ReportPayload{}); err != nil { t.Fatal(err) }
+	if err := s.reportWithJournal(controlplane.ReportPayload{}); err != nil {
+		t.Fatal(err)
+	}
 	pending, err := j.Pending()
 	if err != nil || len(pending) != 3 || len(sink.reports) != 4 {
 		t.Fatalf("unexpected first tick: pending=%d reports=%d err=%v", len(pending), len(sink.reports), err)
 	}
-	if err := s.reportWithJournal(controlplane.ReportPayload{}); err != nil { t.Fatal(err) }
+	if err := s.reportWithJournal(controlplane.ReportPayload{}); err != nil {
+		t.Fatal(err)
+	}
 	pending, err = j.Pending()
 	if err != nil || len(pending) != 0 || len(sink.reports) != 7 {
 		t.Fatalf("unexpected second tick: pending=%d reports=%d err=%v", len(pending), len(sink.reports), err)

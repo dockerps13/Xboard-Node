@@ -1,6 +1,7 @@
 package model
 
 import (
+	"encoding/base64"
 	"fmt"
 	"strings"
 
@@ -39,6 +40,9 @@ func ValidateNodeSpec(n *NodeSpec, kcfg config.KernelConfig) error {
 	if err := validateProtocolTransport(n.Protocol, n.Network); err != nil {
 		return err
 	}
+	if err := validateMieruOptions(n); err != nil {
+		return err
+	}
 	if err := validateTransportKernel(n.Network, kernelType); err != nil {
 		return err
 	}
@@ -58,6 +62,24 @@ func ValidateNodeSpec(n *NodeSpec, kcfg config.KernelConfig) error {
 		if kernelType != "singbox" {
 			return fmt.Errorf("Shadowsocks simple-obfs HTTP adapter requires sing-box kernel, got %s", kernelType)
 		}
+	}
+	return nil
+}
+
+func validateMieruOptions(n *NodeSpec) error {
+	if !strings.EqualFold(strings.TrimSpace(n.Protocol), "mieru") {
+		return nil
+	}
+	switch transport := strings.ToUpper(strings.TrimSpace(n.Transport)); transport {
+	case "", "TCP", "UDP":
+	default:
+		return fmt.Errorf("unsupported Mieru transport %q (supported: TCP, UDP)", n.Transport)
+	}
+	if n.TrafficPattern == "" {
+		return nil
+	}
+	if _, err := base64.StdEncoding.DecodeString(n.TrafficPattern); err != nil {
+		return fmt.Errorf("invalid Mieru traffic_pattern: %w", err)
 	}
 	return nil
 }

@@ -339,15 +339,23 @@ func TestStringOrArrayDecodeHook_String(t *testing.T) {
 func TestGlobalDevicesSnapshot(t *testing.T) {
 	body := `{"users":{"2":["192.0.2.1"]}}`
 	ts, client := newTestServer(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != "POST" || r.URL.Path != "/api/v2/server/devices" { t.Error("unexpected device request") }
+		if r.Method != "POST" || r.URL.Path != "/api/v2/server/devices" {
+			t.Error("unexpected device request")
+		}
 		_, _ = w.Write([]byte(body))
 	})
 	defer ts.Close()
 	devices, err := client.GetGlobalDevices()
-	if err != nil || len(devices[2]) != 1 { t.Fatalf("snapshot=%v err=%v", devices, err) }
+	if err != nil || len(devices[2]) != 1 {
+		t.Fatalf("snapshot=%v err=%v", devices, err)
+	}
 	body = `{"users":{}}`
 	devices, err = client.GetGlobalDevices()
-	if err != nil || devices == nil || len(devices) != 0 { t.Fatalf("empty snapshot=%v err=%v", devices, err) }
+	if err != nil || devices == nil || len(devices) != 0 {
+		t.Fatalf("empty snapshot=%v err=%v", devices, err)
+	}
 	body = `{"users":null}`
-	if _, err := client.GetGlobalDevices(); err == nil { t.Fatal("null snapshot accepted") }
+	if _, err := client.GetGlobalDevices(); err == nil {
+		t.Fatal("null snapshot accepted")
+	}
 }

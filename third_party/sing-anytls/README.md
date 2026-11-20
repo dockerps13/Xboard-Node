@@ -7,6 +7,9 @@ accessed `Stream.dieErr` concurrently while an authentication failure closed a
 stream. That produced a real `go test -race` report in the node's required
 wrong-password and deleted-user tests.
 
-The local change protects `dieErr` reads and writes with an `RWMutex`. No
-protocol or wire-format behavior is changed. Revisit the replacement when the
-upstream project ships an equivalent race fix.
+The local changes protect `dieErr` reads and writes and protect the service
+user map during authentication/update with `RWMutex`. No protocol or
+wire-format behavior is changed. Revisit the replacement when the upstream
+project ships equivalent race fixes; until then, keep this directory pinned
+to the recorded upstream commit and rerun the node's negative-auth and race
+tests before upgrading it.

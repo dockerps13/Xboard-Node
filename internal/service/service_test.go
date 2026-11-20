@@ -35,8 +35,8 @@ type fakeKernel struct {
 	deviceLimitFunc func(string) (int, bool)
 }
 
-func (f *fakeKernel) Name() string { return "fake" }
-func (f *fakeKernel) Protocols() []string { return []string{"vless"} }
+func (f *fakeKernel) Name() string                      { return "fake" }
+func (f *fakeKernel) Protocols() []string               { return []string{"vless"} }
 func (f *fakeKernel) Capabilities() kernel.Capabilities { return kernel.Capabilities{} }
 func (f *fakeKernel) Start(nodeConfig *model.NodeSpec, users []model.UserSpec, tls kernel.TLSCert) error {
 	_, _, _ = nodeConfig, users, tls
@@ -47,7 +47,7 @@ func (f *fakeKernel) Start(nodeConfig *model.NodeSpec, users []model.UserSpec, t
 	f.running = true
 	return nil
 }
-func (f *fakeKernel) Stop() { f.running = false }
+func (f *fakeKernel) Stop()           { f.running = false }
 func (f *fakeKernel) IsRunning() bool { return f.running }
 func (f *fakeKernel) Reload(nodeConfig *model.NodeSpec, users []model.UserSpec, tls kernel.TLSCert) error {
 	_, _, _ = nodeConfig, users, tls
@@ -93,9 +93,9 @@ func (f *fakeKernel) CloseUserConnections(ctx context.Context, uuid string) erro
 	return nil
 }
 func (f *fakeKernel) SetSpeedLimitFunc(fn func(uuid string) *rate.Limiter) { f.speedLimitFunc = fn }
-func (f *fakeKernel) SetDeviceLimitFunc(fn func(uuid string) (int, bool)) { f.deviceLimitFunc = fn }
-func (f *fakeKernel) UpdateGlobalDevices(users map[int][]string) { _ = users }
-func (f *fakeKernel) ClearGlobalDevices() {}
+func (f *fakeKernel) SetDeviceLimitFunc(fn func(uuid string) (int, bool))  { f.deviceLimitFunc = fn }
+func (f *fakeKernel) UpdateGlobalDevices(users map[int][]string)           { _ = users }
+func (f *fakeKernel) ClearGlobalDevices()                                  {}
 
 func newTestService(k *fakeKernel) *Service {
 	sharedLimiter := limiter.New()
@@ -199,7 +199,6 @@ func TestApplyUserDeltaAddPreparesLimiterBeforeKernelUpdate(t *testing.T) {
 		t.Fatal("expected limiter for delta-added user after successful update")
 	}
 }
-
 
 func TestValidateNodeRuntimeRejectsUnsupportedDNSProvider(t *testing.T) {
 	cfg := &config.Config{Kernel: config.KernelConfig{Type: "singbox"}}
@@ -323,5 +322,44 @@ func TestPlainAndRealityDoNotRequireCertificate(t *testing.T) {
 		if !s.canServeTLS(spec) {
 			t.Fatalf("unexpected certificate requirement for %+v", spec)
 		}
+	}
+}
+
+func TestCertificateRecoveryRestartsStoppedTLSListener(t *testing.T) {
+	k := &fakeKernel{}
+	s := newTestService(k)
+	s.cfg = &config.Config{Cert: config.CertConfig{CertMode: "self", Domain: "localhost"}}
+	s.cert = cert.NewManager(s.cfg.Cert)
+	s.certApplyFailed = true
+	s.lastConfig = &model.NodeSpec{Protocol: "anytls", TLS: 1}
+	s.lastUsers = []model.UserSpec{{ID: 1, UUID: "recovered-user"}}
+
+	s.handleCertificateState(context.Background())
+
+	if !s.cert.HasCert() || s.certApplyFailed {
+		t.Fatalf("certificate recovery state: has_cert=%v failed=%v", s.cert.HasCert(), s.certApplyFailed)
+	}
+	if !k.running || k.startCalls != 1 {
+		t.Fatalf("listener was not restarted after certificate recovery: running=%v starts=%d", k.running, k.startCalls)
+	}
+}
+
+func TestCertificateRecoveryKeepsTLSListenerStoppedOnFailure(t *testing.T) {
+	k := &fakeKernel{}
+	s := newTestService(k)
+	s.cfg = &config.Config{Cert: config.CertConfig{
+		CertMode: "file",
+		CertFile: "/does/not/exist/cert.pem",
+		KeyFile:  "/does/not/exist/key.pem",
+	}}
+	s.cert = cert.NewManager(s.cfg.Cert)
+	s.certApplyFailed = true
+	s.lastConfig = &model.NodeSpec{Protocol: "anytls", TLS: 1}
+	s.lastUsers = []model.UserSpec{{ID: 1, UUID: "blocked-user"}}
+
+	s.handleCertificateState(context.Background())
+
+	if k.running || k.startCalls != 0 {
+		t.Fatal("TLS listener started without recovered certificate")
 	}
 }

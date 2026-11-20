@@ -1,9 +1,9 @@
 package xray
 
 import (
-	"sync/atomic"
-	"sync"
 	"fmt"
+	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/cedar2025/xboard-node/internal/model"
@@ -187,7 +187,6 @@ func TestLimitDispatcher_UnlimitedUserFastPath(t *testing.T) {
 	}
 }
 
-
 func TestLimitDispatcher_TrackLinkPreservesReader(t *testing.T) {
 	ld := newTestDispatcher()
 	email := userEmail(1)
@@ -236,7 +235,6 @@ func TestLimitDispatcher_CloseTrackingWriterReleasesConn(t *testing.T) {
 	}
 }
 
-
 func TestDispatcherConcurrentAdmission(t *testing.T) {
 	d := newTestDispatcher()
 	email := userEmail(1)
@@ -253,7 +251,9 @@ func TestDispatcherConcurrentAdmission(t *testing.T) {
 		}(i)
 	}
 	wg.Wait()
-	if admitted.Load() != 2 { t.Fatalf("admitted %d devices, want 2", admitted.Load()) }
+	if admitted.Load() != 2 {
+		t.Fatalf("admitted %d devices, want 2", admitted.Load())
+	}
 }
 
 func TestDispatcherGlobalDeviceUnion(t *testing.T) {
@@ -261,10 +261,18 @@ func TestDispatcherGlobalDeviceUnion(t *testing.T) {
 	email := userEmail(1)
 	d.UpdateLimits(map[string]int{email: 1, "alias": 1}, map[string]int{email: 2, "alias": 2}, nil)
 	d.UpdateGlobalDevices(map[int][]string{1: {"::ffff:192.0.2.1", "192.0.2.1"}})
-	if d.checkDeviceLimit(email, "192.0.2.2", true) { t.Fatal("duplicate global IP consumed a slot") }
-	if !d.checkDeviceLimit("alias", "192.0.2.3", true) { t.Fatal("alias bypassed limit") }
-	if d.checkDeviceLimit("alias", "192.0.2.1", true) { t.Fatal("known global device rejected") }
+	if d.checkDeviceLimit(email, "192.0.2.2", true) {
+		t.Fatal("duplicate global IP consumed a slot")
+	}
+	if !d.checkDeviceLimit("alias", "192.0.2.3", true) {
+		t.Fatal("alias bypassed limit")
+	}
+	if d.checkDeviceLimit("alias", "192.0.2.1", true) {
+		t.Fatal("known global device rejected")
+	}
 	d.ClearGlobalDevices()
 	d.delConn(email, "192.0.2.2")
-	if d.checkDeviceLimit(email, "192.0.2.3", true) { t.Fatal("released slot not reusable") }
+	if d.checkDeviceLimit(email, "192.0.2.3", true) {
+		t.Fatal("released slot not reusable")
+	}
 }

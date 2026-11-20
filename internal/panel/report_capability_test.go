@@ -7,9 +7,9 @@ import (
 
 func TestHandshakeIdempotentReportsExplicitOptIn(t *testing.T) {
 	for _, tc := range []struct {
-		name string
+		name    string
 		payload string
-		want bool
+		want    bool
 	}{
 		{"legacy", `{"websocket":{"enabled":false},"settings":{"push_interval":60}}`, false},
 		{"enabled", `{"websocket":{"enabled":false},"settings":{"push_interval":60,"idempotent_reports":true}}`, true},
@@ -17,7 +17,9 @@ func TestHandshakeIdempotentReportsExplicitOptIn(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var hs HandshakeResponse
-			if err := json.Unmarshal([]byte(tc.payload), &hs); err != nil { t.Fatal(err) }
+			if err := json.Unmarshal([]byte(tc.payload), &hs); err != nil {
+				t.Fatal(err)
+			}
 			if hs.Settings.IdempotentReports != tc.want {
 				t.Fatalf("got %v want %v", hs.Settings.IdempotentReports, tc.want)
 			}

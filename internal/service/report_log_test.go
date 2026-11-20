@@ -4,8 +4,8 @@ import "testing"
 
 func TestReportTrafficTotals(t *testing.T) {
 	tests := []struct {
-		name string
-		traffic map[int][2]int64
+		name     string
+		traffic  map[int][2]int64
 		up, down uint64
 	}{
 		{"empty", nil, 0, 0},

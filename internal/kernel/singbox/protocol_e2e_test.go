@@ -308,3 +308,114 @@ func TestHTTPProxySupportsPlainAndConnectWithAuthentication(t *testing.T) {
 		})
 	}
 }
+
+func TestMieruUDPClientRoundTrip(t *testing.T) {
+	const credential = "aaaaaaaa-1111-2222-3333-444444444444"
+	target, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer target.Close()
+	done := make(chan error, 1)
+	go func() {
+		buf := make([]byte, 256)
+		n, addr, readErr := target.ReadFrom(buf)
+		if readErr != nil {
+			done <- readErr
+			return
+		}
+		if string(buf[:n]) != "mieru-udp-request" {
+			done <- fmt.Errorf("unexpected Mieru UDP payload %q", buf[:n])
+			return
+		}
+		_, writeErr := target.WriteTo([]byte("mieru-udp-response"), addr)
+		done <- writeErr
+	}()
+
+	tcpReservation, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := tcpReservation.Addr().(*net.TCPAddr).Port
+	_ = tcpReservation.Close()
+	udpReservation, err := net.ListenPacket("udp", net.JoinHostPort("127.0.0.1", fmt.Sprint(port)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = udpReservation.Close()
+
+	server := New(config.KernelConfig{
+		Type:        "singbox",
+		LogLevel:    "error",
+		ConfigDir:   t.TempDir(),
+		CustomRoute: []map[string]any{{"ip_cidr": []string{"127.0.0.1/32"}, "outbound": "direct"}},
+	})
+	if err := server.Start(&model.NodeSpec{
+		Protocol:       "mieru",
+		ServerPort:     port,
+		ListenIP:       "127.0.0.1",
+		Transport:      "UDP",
+		TrafficPattern: "CAE=",
+	}, []model.UserSpec{{ID: 1, UUID: credential}}, kernel.TLSCert{}); err != nil {
+		t.Fatal(err)
+	}
+	defer server.Stop()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	ctx = include.Context(ctx)
+	raw, err := json.Marshal(M{
+		"log": M{"level": "error"},
+		"outbounds": []M{{
+			"type":            "mieru",
+			"tag":             "mieru-client",
+			"server":          "127.0.0.1",
+			"server_port":     port,
+			"username":        credential,
+			"password":        credential,
+			"transport":       "UDP",
+			"traffic_pattern": "CAE=",
+		}},
+		"route": M{"final": "mieru-client"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	opts, err := singJSON.UnmarshalExtendedContext[option.Options](ctx, raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clientBox, err := box.New(box.Options{Context: ctx, Options: opts})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer clientBox.Close()
+	if err := clientBox.Start(); err != nil {
+		t.Fatal(err)
+	}
+	manager := service.FromContext[adapter.OutboundManager](ctx)
+	if manager == nil {
+		t.Fatal("client outbound manager missing")
+	}
+	outbound, ok := manager.Outbound("mieru-client")
+	if !ok {
+		t.Fatal("Mieru outbound missing")
+	}
+	packetConn, err := outbound.ListenPacket(ctx, Mdata.ParseSocksaddr(target.LocalAddr().String()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer packetConn.Close()
+	if _, err := packetConn.WriteTo([]byte("mieru-udp-request"), target.LocalAddr()); err != nil {
+		t.Fatal(err)
+	}
+	_ = packetConn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	response := make([]byte, 256)
+	n, _, err := packetConn.ReadFrom(response)
+	if err != nil || string(response[:n]) != "mieru-udp-response" {
+		t.Fatalf("Mieru UDP roundtrip got %q: %v", response[:n], err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}

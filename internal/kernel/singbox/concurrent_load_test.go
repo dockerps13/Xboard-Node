@@ -2,6 +2,7 @@ package singbox
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -10,14 +11,13 @@ import (
 	"net/url"
 	"os"
 	"strings"
-	"encoding/json"
 
 	box "github.com/sagernet/sing-box"
 	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-box/include"
 	"github.com/sagernet/sing-box/option"
-	Mdata "github.com/sagernet/sing/common/metadata"
 	singJSON "github.com/sagernet/sing/common/json"
+	Mdata "github.com/sagernet/sing/common/metadata"
 	"github.com/sagernet/sing/service"
 	"runtime"
 	"strconv"
@@ -71,13 +71,17 @@ func testConcurrentLoad(t *testing.T, protocols []string) {
 	ports := make([]int, 2)
 	for i, protocol := range protocols {
 		reservation, err := net.Listen("tcp", "127.0.0.1:0")
-		if err != nil { t.Fatal(err) }
+		if err != nil {
+			t.Fatal(err)
+		}
 		ports[i] = reservation.Addr().(*net.TCPAddr).Port
 		reservation.Close()
 		server := New(config.KernelConfig{Type: "singbox", LogLevel: "error", ConfigDir: t.TempDir(),
 			CustomRoute: []map[string]any{{"ip_cidr": []string{"127.0.0.1/32"}, "outbound": "direct"}}})
 		if err := server.Start(&model.NodeSpec{Protocol: protocol, ServerPort: ports[i], ListenIP: "127.0.0.1", Cipher: "aes-128-gcm"},
-			[]model.UserSpec{{ID: 1, UUID: uuid}}, kernel.TLSCert{}); err != nil { t.Fatal(err) }
+			[]model.UserSpec{{ID: 1, UUID: uuid}}, kernel.TLSCert{}); err != nil {
+			t.Fatal(err)
+		}
 		servers[i] = server
 		defer server.Stop()
 	}
@@ -98,17 +102,29 @@ func testConcurrentLoad(t *testing.T, protocols []string) {
 			out["uuid"] = uuid
 		}
 		raw, err := json.Marshal(M{"log": M{"level": "error"}, "outbounds": []M{out}, "route": M{"final": "load-client"}})
-		if err != nil { t.Fatal(err) }
+		if err != nil {
+			t.Fatal(err)
+		}
 		opts, err := singJSON.UnmarshalExtendedContext[option.Options](ctx, raw)
-		if err != nil { t.Fatal(err) }
+		if err != nil {
+			t.Fatal(err)
+		}
 		client, err := box.New(box.Options{Context: ctx, Options: opts})
-		if err != nil { t.Fatal(err) }
+		if err != nil {
+			t.Fatal(err)
+		}
 		defer client.Close()
-		if err := client.Start(); err != nil { t.Fatal(err) }
+		if err := client.Start(); err != nil {
+			t.Fatal(err)
+		}
 		manager := service.FromContext[adapter.OutboundManager](ctx)
-		if manager == nil { t.Fatal("missing outbound manager") }
+		if manager == nil {
+			t.Fatal("missing outbound manager")
+		}
 		outbound, ok := manager.Outbound("load-client")
-		if !ok { t.Fatal("missing load outbound") }
+		if !ok {
+			t.Fatal("missing load outbound")
+		}
 		outbounds[i] = outbound
 	}
 	var baseline, peak, after runtime.MemStats
@@ -129,7 +145,9 @@ func testConcurrentLoad(t *testing.T, protocols []string) {
 			defer transport.CloseIdleConnections()
 			if outbound := outbounds[i%2]; outbound != nil {
 				transport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
-					if addr != target.Listener.Addr().String() { return nil, fmt.Errorf("unexpected destination: %s", addr) }
+					if addr != target.Listener.Addr().String() {
+						return nil, fmt.Errorf("unexpected destination: %s", addr)
+					}
 					return outbound.DialContext(ctx, network, Mdata.ParseSocksaddr(addr))
 				}
 			} else if i%2 == 0 {
@@ -142,9 +160,15 @@ func testConcurrentLoad(t *testing.T, protocols []string) {
 				}
 			}
 			req, err := http.NewRequestWithContext(ctx, "POST", target.URL, strings.NewReader(payload))
-			if err != nil { errors <- err; return }
+			if err != nil {
+				errors <- err
+				return
+			}
 			resp, err := (&http.Client{Transport: transport}).Do(req)
-			if err != nil { errors <- err; return }
+			if err != nil {
+				errors <- err
+				return
+			}
 			defer resp.Body.Close()
 			body, err := io.ReadAll(resp.Body)
 			if err != nil || resp.StatusCode != 200 || string(body) != payload {
@@ -182,15 +206,21 @@ func testConcurrentLoad(t *testing.T, protocols []string) {
 	unblock()
 	wg.Wait()
 	close(errors)
-	for err := range errors { t.Error(err) }
-	deadline := time.Now().Add(10*time.Second)
+	for err := range errors {
+		t.Error(err)
+	}
+	deadline := time.Now().Add(10 * time.Second)
 	for i, server := range servers {
 		want := int64((count + 1 - i) / 2 * len(payload))
 		for {
 			traffic, _, active, err := server.GetUserTraffic(context.Background())
-			if err == nil && active == 0 && traffic[1][0] >= want && traffic[1][1] >= want { break }
-			if time.Now().After(deadline) { t.Fatalf("protocol %d traffic=%v active=%d err=%v", i, traffic, active, err) }
-			time.Sleep(25*time.Millisecond)
+			if err == nil && active == 0 && traffic[1][0] >= want && traffic[1][1] >= want {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("protocol %d traffic=%v active=%d err=%v", i, traffic, active, err)
+			}
+			time.Sleep(25 * time.Millisecond)
 		}
 	}
 	runtime.GC()

@@ -15,10 +15,10 @@ import (
 // with machine-level auth; WS events are delivered via an externally-managed
 // PushClient supplied by the machine WS mux.
 type MachinePanelControlPlane struct {
-	client *panel.Client
+	client                *panel.Client
 	globalDeviceSnapshots bool
-	kcfg   config.KernelConfig
-	push   PushClient // virtual push client from WS mux (may be nil)
+	kcfg                  config.KernelConfig
+	push                  PushClient // virtual push client from WS mux (may be nil)
 
 	// The machine orchestrator already fetched this config for kernel selection.
 	// Reuse it for first bootstrap to avoid a redundant network round trip.
@@ -99,7 +99,11 @@ func (p *MachinePanelControlPlane) Initial(
 	}
 	bootstrap.Users = model.UserSpecsFromPanel(users)
 	if p.globalDeviceSnapshots {
-		if devices, err := p.client.GetGlobalDevices(); err == nil { bootstrap.DeviceUsers = devices } else { nlog.Core().Warn("initial global device snapshot failed", "error", err) }
+		if devices, err := p.client.GetGlobalDevices(); err == nil {
+			bootstrap.DeviceUsers = devices
+		} else {
+			nlog.Core().Warn("initial global device snapshot failed", "error", err)
+		}
 	}
 
 	// Register mailbox access after the initial snapshot is prepared, so the
@@ -135,7 +139,11 @@ func (p *MachinePanelControlPlane) Poll(ctx context.Context) (Snapshot, error) {
 	}
 	snapshot := Snapshot{Config: nodeSpec, Users: model.UserSpecsFromPanel(users)}
 	if p.globalDeviceSnapshots {
-		if devices, err := p.client.GetGlobalDevices(); err == nil { snapshot.DeviceUsers = devices } else { nlog.Core().Warn("global device snapshot failed", "error", err) }
+		if devices, err := p.client.GetGlobalDevices(); err == nil {
+			snapshot.DeviceUsers = devices
+		} else {
+			nlog.Core().Warn("global device snapshot failed", "error", err)
+		}
 	}
 	return snapshot, nil
 }

@@ -892,7 +892,7 @@ func TestExtractECHInbound(t *testing.T) {
 
 func TestBuildInbound_Hysteria2Alias(t *testing.T) {
 	node := testNodeSpec(&panel.NodeConfig{
-		Protocol: "hysteria2",
+		Protocol:   "hysteria2",
 		ServerPort: 8443,
 	})
 	inbound := buildInbound(node, testUsers, kernel.TLSCert{})

@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"testing"
 
-	boxOption "github.com/sagernet/sing-box/option"
 	"github.com/sagernet/sing-box/include"
+	boxOption "github.com/sagernet/sing-box/option"
 	singJSON "github.com/sagernet/sing/common/json"
 
 	"github.com/cedar2025/xboard-node/internal/config"
@@ -16,10 +16,10 @@ import (
 
 func TestShadowsocksBackendSupportsLoopbackTCPOnly(t *testing.T) {
 	cfg := buildConfig(config.KernelConfig{}, &model.NodeSpec{
-		Protocol: "shadowsocks",
+		Protocol:   "shadowsocks",
 		ServerPort: 50000,
-		ListenIP: "127.0.0.1",
-		Cipher: "aes-128-gcm",
+		ListenIP:   "127.0.0.1",
+		Cipher:     "aes-128-gcm",
 	}, testUsers, kernel.TLSCert{})
 	inbound := cfg["inbounds"].([]M)[0]
 	inbound["listen"] = "127.0.0.1"

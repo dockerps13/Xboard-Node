@@ -62,7 +62,9 @@ func (t *SpeedTracker) UpdateBuckets() {
 
 		for _, user := range currentUsers {
 			activeIDs[user.ID] = struct{}{}
-			if user.SpeedLimit > 0 { configured = true }
+			if user.SpeedLimit > 0 {
+				configured = true
+			}
 			if user.UUID != "" {
 				newUUIDMap[user.UUID] = user.ID
 			}

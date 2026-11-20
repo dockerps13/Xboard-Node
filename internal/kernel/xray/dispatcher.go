@@ -3,11 +3,11 @@ package xray
 import (
 	"context"
 	"errors"
-	"reflect"
 	"net/netip"
-	"time"
+	"reflect"
 	"sync"
 	"sync/atomic"
+	"time"
 	_ "unsafe"
 
 	xrayDispatcher "github.com/xtls/xray-core/app/dispatcher"
@@ -72,10 +72,10 @@ type LimitDispatcher struct {
 
 	// limitedUsers: users with device limit > 0, protected by mu.
 	// Needs deterministic IP ordering for kick decisions.
-	mu           sync.RWMutex
-	limitedIPs   map[string]map[string]int // email → sourceIP → refcount
-	deviceLimits map[string]int            // email → max devices
-	emailToUID   map[string]int            // email → panel user ID
+	mu            sync.RWMutex
+	limitedIPs    map[string]map[string]int // email → sourceIP → refcount
+	deviceLimits  map[string]int            // email → max devices
+	emailToUID    map[string]int            // email → panel user ID
 	globalDevices map[int]map[string]bool
 	globalUpdated time.Time
 
@@ -330,19 +330,25 @@ func (d *LimitDispatcher) checkDeviceLimit(email, sourceIP string, isTCP bool) b
 	for alias, local := range d.limitedIPs {
 		if alias == email || (uid != 0 && d.emailToUID[alias] == uid) {
 			for ip, count := range local {
-				if count > 0 { known[ip] = true }
+				if count > 0 {
+					known[ip] = true
+				}
 			}
 		}
 	}
 	d.unlimitedIPs.Range(func(key, value interface{}) bool {
 		alias := key.(string)
 		if alias == email || (uid != 0 && d.emailToUID[alias] == uid) {
-			for ip := range value.(*ipCounter).aliveIPs() { known[ip] = true }
+			for ip := range value.(*ipCounter).aliveIPs() {
+				known[ip] = true
+			}
 		}
 		return true
 	})
 	if time.Since(d.globalUpdated) <= 60*time.Second {
-		for ip := range d.globalDevices[uid] { known[ip] = true }
+		for ip := range d.globalDevices[uid] {
+			known[ip] = true
+		}
 	}
 	if !known[sourceIP] && len(known) >= limit {
 		return true
@@ -363,14 +369,20 @@ func (d *LimitDispatcher) delConn(email, sourceIP string) {
 	defer d.mu.Unlock()
 	if ips := d.limitedIPs[email]; ips[sourceIP] > 0 {
 		ips[sourceIP]--
-		if ips[sourceIP] == 0 { delete(ips, sourceIP) }
-		if len(ips) == 0 { delete(d.limitedIPs, email) }
+		if ips[sourceIP] == 0 {
+			delete(ips, sourceIP)
+		}
+		if len(ips) == 0 {
+			delete(d.limitedIPs, email)
+		}
 		return
 	}
 	if v, ok := d.unlimitedIPs.Load(email); ok {
 		ic := v.(*ipCounter)
 		if rv, ok := ic.ips.Load(sourceIP); ok {
-			if rv.(*atomic.Int64).Add(-1) <= 0 { ic.ips.Delete(sourceIP) }
+			if rv.(*atomic.Int64).Add(-1) <= 0 {
+				ic.ips.Delete(sourceIP)
+			}
 		}
 	}
 }

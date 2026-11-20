@@ -27,14 +27,14 @@ const (
 // encrypted Shadowsocks stream to a loopback-only backend. Real client IPs
 // are tracked by the local source-port mapping in origin.go.
 type HTTPServer struct {
-	mu       sync.RWMutex
-	listener net.Listener
-	backend  string
-	host     string
-	active   map[net.Conn]struct{}
-	wg       sync.WaitGroup
+	mu        sync.RWMutex
+	listener  net.Listener
+	backend   string
+	host      string
+	active    map[net.Conn]struct{}
+	wg        sync.WaitGroup
 	failureMu sync.Mutex
-	failures [3]failureWindow
+	failures  [3]failureWindow
 }
 
 func ListenHTTP(addr, backend, host string) (*HTTPServer, error) {
@@ -52,7 +52,7 @@ func ListenHTTP(addr, backend, host string) (*HTTPServer, error) {
 }
 
 type failureWindow struct {
-	last time.Time
+	last       time.Time
 	suppressed uint64
 }
 

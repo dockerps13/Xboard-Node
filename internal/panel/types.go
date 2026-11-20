@@ -62,7 +62,7 @@ type Settings struct {
 	PullInterval int `json:"pull_interval"`
 	// Set only when the panel stores report IDs durably and applies charges
 	// atomically at most once. Legacy panels omit this field.
-	IdempotentReports bool `json:"idempotent_reports,omitempty"`
+	IdempotentReports     bool `json:"idempotent_reports,omitempty"`
 	GlobalDeviceSnapshots bool `json:"global_device_snapshots,omitempty"`
 }
 

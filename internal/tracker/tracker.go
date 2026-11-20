@@ -51,15 +51,15 @@ type Tracker struct {
 	// Separate HTTP and WS delivery state. HTTP has a receipt; WS is
 	// best effort and must never consume HTTP's pending offline notices.
 	reportedAlive map[int]struct{}
-	wsAlive map[int]struct{}
+	wsAlive       map[int]struct{}
 }
 
 func New() *Tracker {
 	t := &Tracker{
 		lastSeen:       make(map[int][2]int64),
 		pendingTraffic: make(map[int][2]int64),
-		reportedAlive: make(map[int]struct{}),
-		wsAlive: make(map[int]struct{}),
+		reportedAlive:  make(map[int]struct{}),
+		wsAlive:        make(map[int]struct{}),
 	}
 	// Publish initial empty snapshot.
 	t.live.Store(&snapshot{
@@ -196,7 +196,9 @@ func (t *Tracker) FlushWSAliveIPs() map[int][]string {
 	defer t.mu.Unlock()
 	out := t.prepareAlive(t.wsAlive)
 	for uid, ips := range out {
-		if len(ips) == 0 { delete(t.wsAlive, uid) }
+		if len(ips) == 0 {
+			delete(t.wsAlive, uid)
+		}
 	}
 	return out
 }
@@ -209,7 +211,9 @@ func (t *Tracker) prepareAlive(known map[int]struct{}) map[int][]string {
 	}
 	for uid, ips := range s.aliveIPs {
 		list := make([]string, 0, len(ips))
-		for ip := range ips { list = append(list, ip) }
+		for ip := range ips {
+			list = append(list, ip)
+		}
 		sort.Strings(list)
 		out[uid] = list
 		known[uid] = struct{}{}
@@ -223,7 +227,9 @@ func (t *Tracker) AcknowledgeAliveIPs(sent map[int][]string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	for uid, ips := range sent {
-		if len(ips) == 0 { delete(t.reportedAlive, uid) }
+		if len(ips) == 0 {
+			delete(t.reportedAlive, uid)
+		}
 	}
 }
 
@@ -243,7 +249,9 @@ func (t *Tracker) CurrentOnline() map[int]int {
 func (t *Tracker) RestoreAliveIPs(data map[int][]string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	for uid := range data { t.reportedAlive[uid] = struct{}{} }
+	for uid := range data {
+		t.reportedAlive[uid] = struct{}{}
+	}
 }
 
 // LogStats logs current tracking statistics.

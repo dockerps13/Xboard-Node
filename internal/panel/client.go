@@ -2,13 +2,13 @@ package panel
 
 import (
 	"bytes"
-	"errors"
-	"net"
-	"net/http/httptrace"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/http/httptrace"
 	"net/url"
 	"reflect"
 	"strconv"
@@ -144,7 +144,9 @@ func (c *Client) ReportWithBatchID(batchID string, traffic map[int][2]int64, ali
 	if len(alive) > 0 {
 		a := aliveMapPool.Get().(map[string][]string)
 		for uid, ips := range alive {
-			if ips == nil { ips = []string{} }
+			if ips == nil {
+				ips = []string{}
+			}
 			a[strconv.Itoa(uid)] = ips
 		}
 		payload["alive"] = a
@@ -406,7 +408,7 @@ func (c *Client) authQuery() url.Values {
 // reportResultError describes a failed receipt without logging the response
 // body, which may contain credentials or other private panel data.
 type reportResultError struct {
-	stage string
+	stage  string
 	status int
 }
 
@@ -562,17 +564,31 @@ func (c *Client) SnapshotMetrics() APIMetrics {
 // A missing or null users object is invalid; an empty object clears the snapshot.
 func (c *Client) GetGlobalDevices() (map[int][]string, error) {
 	resp, err := c.doRequest("POST", "/api/v2/server/devices", nil, "")
-	if err != nil { return nil, err }
+	if err != nil {
+		return nil, err
+	}
 	defer drainAndClose(resp.Body)
-	if resp.StatusCode != http.StatusOK { return nil, fmt.Errorf("global devices HTTP %d", resp.StatusCode) }
-	var result struct { Users map[int][]string `json:"users"` }
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 16<<20)).Decode(&result); err != nil { return nil, err }
-	if result.Users == nil { return nil, fmt.Errorf("global devices response missing users object") }
-	for uid, ips := range result.Users { if uid <= 0 || ips == nil { return nil, fmt.Errorf("invalid global device snapshot entry") } }
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("global devices HTTP %d", resp.StatusCode)
+	}
+	var result struct {
+		Users map[int][]string `json:"users"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 16<<20)).Decode(&result); err != nil {
+		return nil, err
+	}
+	if result.Users == nil {
+		return nil, fmt.Errorf("global devices response missing users object")
+	}
+	for uid, ips := range result.Users {
+		if uid <= 0 || ips == nil {
+			return nil, fmt.Errorf("invalid global device snapshot entry")
+		}
+	}
 	return result.Users, nil
 }
 
- // reportNotSentError is emitted only for a standard HTTP transport dial
+// reportNotSentError is emitted only for a standard HTTP transport dial
 // failure before any connection was obtained for this report.
 type reportNotSentError struct{}
 

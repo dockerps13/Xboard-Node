@@ -64,8 +64,8 @@ func TestInvalidWSPushDoesNotAdvanceNodeRevision(t *testing.T) {
 	mailbox.MarkReady()
 	handle := &nodeHandle{kernelType: "singbox", revision: 7, node: panel.MachineNode{ID: nodeID, Type: "shadowsocks"}}
 	orchestrator := &Orchestrator{
-		cfg: &config.Config{Kernel: config.KernelConfig{Type: "singbox"}},
-		nodes: map[int]*nodeHandle{nodeID: handle},
+		cfg:       &config.Config{Kernel: config.KernelConfig{Type: "singbox"}},
+		nodes:     map[int]*nodeHandle{nodeID: handle},
 		mailboxes: map[int]*controlplane.NodeMailbox{nodeID: mailbox},
 	}
 	// Unsupported OBFS with a higher revision must not poison the revision

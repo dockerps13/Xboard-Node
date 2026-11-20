@@ -12,10 +12,10 @@ import (
 )
 
 type PanelControlPlane struct {
-	cfg    config.PanelConfig
-	wsCfg  config.WSConfig
-	kcfg   config.KernelConfig
-	client *panel.Client
+	cfg                   config.PanelConfig
+	wsCfg                 config.WSConfig
+	kcfg                  config.KernelConfig
+	client                *panel.Client
 	globalDeviceSnapshots bool
 }
 
@@ -68,7 +68,11 @@ func (p *PanelControlPlane) Initial(ctx context.Context, metricsFn func() map[st
 	}
 	bootstrap.Users = model.UserSpecsFromPanel(users)
 	if p.globalDeviceSnapshots {
-		if devices, err := p.client.GetGlobalDevices(); err == nil { bootstrap.DeviceUsers = devices } else { nlog.Core().Warn("initial global device snapshot failed", "error", err) }
+		if devices, err := p.client.GetGlobalDevices(); err == nil {
+			bootstrap.DeviceUsers = devices
+		} else {
+			nlog.Core().Warn("initial global device snapshot failed", "error", err)
+		}
 	}
 	return bootstrap, nil
 }
@@ -93,7 +97,11 @@ func (p *PanelControlPlane) Poll(ctx context.Context) (Snapshot, error) {
 	}
 	snapshot := Snapshot{Config: nodeSpec, Users: model.UserSpecsFromPanel(users)}
 	if p.globalDeviceSnapshots {
-		if devices, err := p.client.GetGlobalDevices(); err == nil { snapshot.DeviceUsers = devices } else { nlog.Core().Warn("global device snapshot failed", "error", err) }
+		if devices, err := p.client.GetGlobalDevices(); err == nil {
+			snapshot.DeviceUsers = devices
+		} else {
+			nlog.Core().Warn("global device snapshot failed", "error", err)
+		}
 	}
 	return snapshot, nil
 }

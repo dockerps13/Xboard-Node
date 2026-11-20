@@ -25,12 +25,12 @@ func testSelfSignedTLS(t *testing.T) kernel.TLSCert {
 	}
 	cert := &x509.Certificate{
 		SerialNumber: big.NewInt(1),
-		Subject: pkix.Name{CommonName: "localhost"},
-		NotBefore: time.Now().Add(-time.Hour),
-		NotAfter: time.Now().Add(time.Hour),
-		KeyUsage: x509.KeyUsageDigitalSignature,
-		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-		DNSNames: []string{"localhost"},
+		Subject:      pkix.Name{CommonName: "localhost"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		DNSNames:     []string{"localhost"},
 	}
 	der, err := x509.CreateCertificate(rand.Reader, cert, cert, &key.PublicKey, key)
 	if err != nil {
@@ -42,7 +42,7 @@ func testSelfSignedTLS(t *testing.T) kernel.TLSCert {
 	}
 	return kernel.TLSCert{
 		CertPEM: pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}),
-		KeyPEM: pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: privateDER}),
+		KeyPEM:  pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: privateDER}),
 	}
 }
 
@@ -78,12 +78,12 @@ func TestAllXBoardProtocolsCanBootEmbeddedSingBox(t *testing.T) {
 			port := reservation.Addr().(*net.TCPAddr).Port
 			_ = reservation.Close()
 			node := &model.NodeSpec{
-				Protocol: tc.protocol,
+				Protocol:   tc.protocol,
 				ServerPort: port,
-				ListenIP: "127.0.0.1",
-				Cipher: "aes-128-gcm",
-				TLS: tc.tls,
-				Version: tc.version,
+				ListenIP:   "127.0.0.1",
+				Cipher:     "aes-128-gcm",
+				TLS:        tc.tls,
+				Version:    tc.version,
 			}
 			server := New(config.KernelConfig{Type: "singbox", LogLevel: "error", ConfigDir: t.TempDir()})
 			users := []model.UserSpec{{ID: 1, UUID: "aaaaaaaa-1111-2222-3333-444444444444"}}
