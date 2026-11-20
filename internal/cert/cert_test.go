@@ -234,3 +234,18 @@ func TestACMEFingerprintEnvOrderStable(t *testing.T) {
 		t.Fatal("fingerprint not order-independent")
 	}
 }
+
+func TestACMEStorageDirectory(t *testing.T) {
+	cfg := config.CertConfig{CertDir: "/instance/node-17/certs", ACMEStorageDir: "/instance/shared-acme"}
+	if got := acmeStorageDirectory(cfg); got != "/instance/shared-acme" {
+		t.Fatalf("shared storage = %q", got)
+	}
+	cfg.CertDir = "/instance/node-25/certs"
+	if got := acmeStorageDirectory(cfg); got != "/instance/shared-acme" {
+		t.Fatalf("second node storage = %q", got)
+	}
+	cfg.ACMEStorageDir = ""
+	if got := acmeStorageDirectory(cfg); got != cfg.CertDir {
+		t.Fatalf("standalone storage = %q", got)
+	}
+}

@@ -390,6 +390,15 @@ func (m *Manager) startContent() error {
 
 // ─── Mode: http / dns (ACME) ──────────────────────────────────────────────
 
+// acmeStorageDirectory isolates standalone configurations while sharing ACME
+// resources between nodes belonging to the same machine instance.
+func acmeStorageDirectory(cfg config.CertConfig) string {
+	if cfg.ACMEStorageDir != "" {
+		return cfg.ACMEStorageDir
+	}
+	return cfg.CertDir
+}
+
 func (m *Manager) startACME(ctx context.Context, dnsSolver *certmagic.DNS01Solver) error {
 	// Idempotent for unchanged config: Reconfigure already tore down stale ACME state.
 	if m.acmeStarted {
@@ -404,7 +413,11 @@ func (m *Manager) startACME(ctx context.Context, dnsSolver *certmagic.DNS01Solve
 		return fmt.Errorf("create cert dir: %w", err)
 	}
 
-	storage := &certmagic.FileStorage{Path: m.cfg.CertDir}
+	storageDir := acmeStorageDirectory(m.cfg)
+	if err := os.MkdirAll(storageDir, 0o700); err != nil {
+		return fmt.Errorf("create shared ACME storage: %w", err)
+	}
+	storage := &certmagic.FileStorage{Path: storageDir}
 
 	var magic *certmagic.Config
 	cache := certmagic.NewCache(certmagic.CacheOptions{

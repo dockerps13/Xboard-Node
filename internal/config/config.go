@@ -151,6 +151,7 @@ type CertConfig struct {
 	CertFile string `yaml:"cert_file"`
 	KeyFile  string `yaml:"key_file"`
 	CertDir  string `yaml:"cert_dir"`
+	ACMEStorageDir string `yaml:"-"` // machine-local shared ACME storage
 	HTTPPort int    `yaml:"http_port"` // port for HTTP-01 challenge (default: 80)
 
 	// CertMode selects the TLS certificate strategy:
@@ -806,6 +807,7 @@ func (c *Config) ExpandMachineNode(nodeID int, nodeType string) *Config {
 		nodeCfg.Kernel.GeoDataDir = c.Kernel.GeoDataDir
 	}
 	nodeCfg.Cert.CertDir = filepath.Join(nodeCfg.Kernel.ConfigDir, "certs")
+	nodeCfg.Cert.ACMEStorageDir = filepath.Join(c.Kernel.ConfigDir, "shared-acme")
 
 	return &nodeCfg
 }
