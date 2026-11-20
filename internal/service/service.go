@@ -45,6 +45,8 @@ type Service struct {
 	speedTracker *limiter.SpeedTracker
 	cert         *cert.Manager
 
+	certApplyFailed bool // main-loop owned; do not serve TLS with stale or absent material
+
 	lastConfig *model.NodeSpec
 	lastUsers  []model.UserSpec
 
@@ -391,6 +393,10 @@ func (s *Service) applyRemoteOverrides(ctx context.Context, nc *model.NodeSpec) 
 
 	// Certificate configuration from panel (panel-first: takes precedence over local config)
 	if nc.CertConfig != nil {
+		// Stop a previously cleartext listener before attempting a TLS upgrade.
+		if requiresCertificate(nc) && !requiresCertificate(s.appliedConfig()) && s.kernel.IsRunning() {
+			s.stopForTLS(ctx)
+		}
 		return s.applyNodeCert(ctx, nc.CertConfig)
 	}
 
@@ -416,6 +422,7 @@ func (s *Service) applyNodeCert(ctx context.Context, newCfg *config.CertConfig) 
 	cfgCopy.CertDir = s.cfg.Cert.CertDir
 
 	changed, err := s.cert.Reconfigure(ctx, cfgCopy)
+	s.certApplyFailed = err != nil
 	if err != nil {
 		nlog.Core().Error("failed to apply runtime cert config", "mode", cfgCopy.CertMode, "error", err)
 		return false
@@ -793,6 +800,10 @@ func (s *Service) restoreUserState(users []model.UserSpec, hash string) {
 // startKernel starts (or restarts) the kernel with the given config/users and
 // records the successfully applied state. Returns false on error.
 func (s *Service) startKernel(nc *model.NodeSpec, users []model.UserSpec) bool {
+	if !s.canServeTLS(nc) {
+		s.stopForTLS(context.Background())
+		return false
+	}
 	if err := s.kernel.Start(nc, users, s.cert.TLSCert()); err != nil {
 		nlog.Core().Error("failed to start kernel", "error", err)
 		return false
@@ -1009,6 +1020,11 @@ func (s *Service) applyChanges(ctx context.Context, configChanged, usersChanged 
 		return
 	}
 
+	if !s.canServeTLS(s.lastConfig) {
+		s.stopForTLS(ctx)
+		return
+	}
+
 	// If config changed, delegate to kernel.Reload. The kernel implementation
 	// decides whether to hot-swap users, reconstruct inbounds, or restart itself.
 	if configChanged && s.kernel.IsRunning() {
@@ -1024,6 +1040,37 @@ func (s *Service) applyChanges(ctx context.Context, configChanged, usersChanged 
 	} else if !s.kernel.IsRunning() {
 		s.startKernel(s.lastConfig, s.lastUsers)
 	}
+}
+
+// requiresCertificate distinguishes certificate TLS from REALITY.
+func requiresCertificate(spec *model.NodeSpec) bool {
+	if spec == nil {
+		return false
+	}
+	if spec.TLS == 1 {
+		return true
+	}
+	switch spec.Protocol {
+	case "hysteria", "hysteria2", "tuic", "anytls":
+		return true
+	case "trojan":
+		return spec.TLS != 2
+	}
+	return false
+}
+
+func (s *Service) canServeTLS(spec *model.NodeSpec) bool {
+	return !requiresCertificate(spec) || (!s.certApplyFailed && s.cert.TLSCert().HasCert())
+}
+
+func (s *Service) stopForTLS(ctx context.Context) {
+	if s.kernel.IsRunning() {
+		s.trackAndEnforce(ctx)
+		s.kernel.Stop()
+		s.tracker.ClearLiveDevices()
+	}
+	s.clearAppliedState()
+	nlog.Core().Warn("TLS certificate unavailable or configuration pending; listener disabled")
 }
 
 func (s *Service) trackAndEnforce(ctx context.Context) {
@@ -1485,16 +1532,7 @@ func validateNodeRuntime(cfg *config.Config, kcfgSupported []string, spec *model
 }
 
 func validateTLSRequirements(spec *model.NodeSpec, tls kernel.TLSCert, kernelType string) error {
-	needsCert := false
-	switch spec.Protocol {
-	case "hysteria", "hysteria2", "tuic", "anytls":
-		needsCert = true
-	case "trojan":
-		if spec.TLS != 2 {
-			needsCert = true
-		}
-	}
-	if needsCert && !hasUsableTLSConfig(spec, tls) {
+	if requiresCertificate(spec) && !hasUsableTLSConfig(spec, tls) {
 		return fmt.Errorf("protocol %q requires TLS certificate files", spec.Protocol)
 	}
 	if spec.TLS == 2 {

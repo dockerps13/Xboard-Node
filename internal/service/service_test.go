@@ -298,3 +298,30 @@ func TestValidateNodeRuntimeRejectsRealityWithoutServerNameOrDest(t *testing.T) 
 		t.Fatalf("unexpected error: %v", got)
 	}
 }
+
+func TestTLSUpgradeWithoutMaterialStopsListener(t *testing.T) {
+	k := &fakeKernel{running: true}
+	s := newTestService(k)
+	s.lastConfig = &model.NodeSpec{Protocol: "vless", TLS: 1}
+	s.lastUsers = []model.UserSpec{{ID: 1, UUID: "test-user"}}
+	s.applyChanges(context.Background(), true, false)
+	if k.running || k.startCalls != 0 {
+		t.Fatal("TLS upgrade without certificate must not retain or start a listener")
+	}
+	if s.startKernel(s.lastConfig, s.lastUsers) {
+		t.Fatal("TLS startup without certificate accepted")
+	}
+}
+
+func TestPlainAndRealityDoNotRequireCertificate(t *testing.T) {
+	s := newTestService(&fakeKernel{})
+	for _, spec := range []*model.NodeSpec{
+		{Protocol: "http"},
+		{Protocol: "vless", TLS: 2},
+		{Protocol: "trojan", TLS: 2},
+	} {
+		if !s.canServeTLS(spec) {
+			t.Fatalf("unexpected certificate requirement for %+v", spec)
+		}
+	}
+}
