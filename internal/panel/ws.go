@@ -393,8 +393,11 @@ func (w *WSClient) handleDataEvent(msg wsMessage) {
 			nlog.Core().Warn("ws: cannot decode users payload", "error", err)
 			return
 		}
-		if len(p.Users) == 0 {
-			nlog.Core().Warn("ws: users payload empty")
+		// An explicitly empty array is a valid full snapshot: it means every
+		// user was removed. Reject only an omitted/null users field, otherwise
+		// the node can never converge after the last user is deleted.
+		if p.Users == nil {
+			nlog.Core().Warn("ws: users payload missing")
 			return
 		}
 		event.Users = p.Users

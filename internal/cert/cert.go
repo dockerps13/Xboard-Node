@@ -11,17 +11,23 @@ import (
 	"crypto/x509/pkix"
 	"encoding/hex"
 	"encoding/pem"
+	"errors"
 	"fmt"
+	"io"
 	"math/big"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/caddyserver/certmagic"
+	"golang.org/x/crypto/acme"
 
 	"github.com/cedar2025/xboard-node/internal/cert/dnsproviders"
 	"github.com/cedar2025/xboard-node/internal/config"
@@ -102,8 +108,26 @@ func (m *Manager) persistPEM(cert, key []byte) {
 
 // atomicWriteFile writes data to a temp file and renames, preventing partial reads.
 func atomicWriteFile(path string, data []byte, perm os.FileMode) error {
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, perm); err != nil {
+	dir := filepath.Dir(path)
+	tmpFile, err := os.CreateTemp(dir, ".xboard-cert-*")
+	if err != nil {
+		return err
+	}
+	tmp := tmpFile.Name()
+	defer os.Remove(tmp)
+	if err := tmpFile.Chmod(perm); err != nil {
+		_ = tmpFile.Close()
+		return err
+	}
+	if _, err := tmpFile.Write(data); err != nil {
+		_ = tmpFile.Close()
+		return err
+	}
+	if err := tmpFile.Sync(); err != nil {
+		_ = tmpFile.Close()
+		return err
+	}
+	if err := tmpFile.Close(); err != nil {
 		return err
 	}
 	return os.Rename(tmp, path)
@@ -124,7 +148,7 @@ func (m *Manager) loadPersistedPEM() bool {
 	if err != nil {
 		return false
 	}
-	if err := validateKeyPair(certPEM, keyPEM); err != nil {
+	if err := validateCertificatePair(certPEM, keyPEM, m.cfg.Domain); err != nil {
 		nlog.Core().Warn("cert: persisted cert invalid, will regenerate", "error", err)
 		return false
 	}
@@ -191,6 +215,10 @@ func acmeFingerprint(cfg config.CertConfig) string {
 	b.WriteString(strings.TrimSpace(cfg.Email))
 	b.WriteByte('|')
 	b.WriteString(strings.TrimSpace(cfg.DNSProvider))
+	b.WriteByte('|')
+	b.WriteString(strconv.Itoa(cfg.HTTPPort))
+	b.WriteByte('|')
+	b.WriteString(strings.TrimSpace(cfg.ACMEStorageDir))
 	b.WriteByte('|')
 	for _, k := range keys {
 		b.WriteString(k)
@@ -268,6 +296,11 @@ func (m *Manager) Start(ctx context.Context) error {
 
 	switch mode {
 	case "none", "":
+		if m.acmeStarted {
+			m.tearDownACME()
+		} else {
+			m.mat.Store(nil)
+		}
 		return nil
 	case "file":
 		return m.startFile()
@@ -288,9 +321,15 @@ func (m *Manager) Start(ctx context.Context) error {
 	}
 }
 
-// Stop is a no-op: certmagic's background goroutine is cancelled via the
-// context passed to ManageAsync.
-func (m *Manager) Stop() {}
+// Stop cancels certmagic's background renewal goroutine and clears the
+// in-memory material so no listener can continue using a stopped manager.
+func (m *Manager) Stop() {
+	if m.acmeStarted || m.acmeCancel != nil {
+		m.tearDownACME()
+		return
+	}
+	m.mat.Store(nil)
+}
 
 // ─── Mode: file ────────────────────────────────────────────────────────────
 
@@ -303,7 +342,7 @@ func (m *Manager) startFile() error {
 	if err != nil {
 		return fmt.Errorf("key file: %w", err)
 	}
-	if err := validateKeyPair(certPEM, keyPEM); err != nil {
+	if err := validateCertificatePair(certPEM, keyPEM, m.cfg.Domain); err != nil {
 		return fmt.Errorf("invalid certificate pair: %w", err)
 	}
 	m.storePEM(certPEM, keyPEM)
@@ -380,7 +419,7 @@ func (m *Manager) startContent() error {
 	}
 	certPEM := []byte(m.cfg.CertContent)
 	keyPEM := []byte(m.cfg.KeyContent)
-	if err := validateKeyPair(certPEM, keyPEM); err != nil {
+	if err := validateCertificatePair(certPEM, keyPEM, m.cfg.Domain); err != nil {
 		return fmt.Errorf("invalid certificate content: %w", err)
 	}
 	m.storePEM(certPEM, keyPEM)
@@ -399,13 +438,216 @@ func acmeStorageDirectory(cfg config.CertConfig) string {
 	return cfg.CertDir
 }
 
+// migrateACMEStorage copies files from the pre-shared CertDir into the
+// machine-wide certmagic directory without overwriting existing shared state.
+// Existing shared files win because they may have been created by another
+// node. Temporary files and lock files are deliberately not migrated.
+func migrateACMEStorage(legacyDir, storageDir string) error {
+	if legacyDir == "" || storageDir == "" {
+		return nil
+	}
+	legacyAbs, err := filepath.Abs(legacyDir)
+	if err != nil {
+		return fmt.Errorf("resolve legacy ACME directory: %w", err)
+	}
+	storageAbs, err := filepath.Abs(storageDir)
+	if err != nil {
+		return fmt.Errorf("resolve shared ACME directory: %w", err)
+	}
+	if filepath.Clean(legacyAbs) == filepath.Clean(storageAbs) {
+		return nil
+	}
+	if _, err := os.Stat(legacyAbs); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("stat legacy ACME directory: %w", err)
+	}
+	return copyMissingTree(legacyAbs, storageAbs)
+}
+
+func copyMissingTree(srcDir, dstDir string) error {
+	entries, err := os.ReadDir(srcDir)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(dstDir, 0o700); err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if name == ".acme.lock" || strings.HasSuffix(name, ".tmp") {
+			continue
+		}
+		srcPath := filepath.Join(srcDir, name)
+		dstPath := filepath.Join(dstDir, name)
+		if entry.Type()&os.ModeSymlink != 0 {
+			return fmt.Errorf("refusing to migrate symlink %q", srcPath)
+		}
+		if entry.IsDir() {
+			if info, statErr := os.Stat(dstPath); statErr == nil && !info.IsDir() {
+				continue
+			} else if statErr != nil && !os.IsNotExist(statErr) {
+				return statErr
+			}
+			if err := copyMissingTree(srcPath, dstPath); err != nil {
+				return fmt.Errorf("migrate %q: %w", srcPath, err)
+			}
+			continue
+		}
+		if !entry.Type().IsRegular() {
+			return fmt.Errorf("refusing to migrate non-regular file %q", srcPath)
+		}
+		if _, err := os.Stat(dstPath); err == nil {
+			continue
+		} else if !os.IsNotExist(err) {
+			return err
+		}
+		if err := copyFileExclusive(srcPath, dstPath, entry); err != nil {
+			return fmt.Errorf("migrate %q: %w", srcPath, err)
+		}
+	}
+	return nil
+}
+
+func copyFileExclusive(srcPath, dstPath string, entry os.DirEntry) error {
+	src, err := os.Open(srcPath)
+	if err != nil {
+		return err
+	}
+	defer src.Close()
+
+	info, err := entry.Info()
+	if err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(dstPath), ".xboard-acme-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	if err := tmp.Chmod(info.Mode().Perm()); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if _, err := io.Copy(tmp, src); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	// Linking the completed temporary file is an atomic no-clobber install on
+	// the same filesystem. A concurrent node that won the race is authoritative.
+	if err := os.Link(tmpPath, dstPath); err != nil {
+		if os.IsExist(err) {
+			return nil
+		}
+		return err
+	}
+	return nil
+}
+
+// acquireACMELock serializes the initial ACME obtain operation across nodes
+// sharing the same machine-local storage directory.
+func acquireACMELock(ctx context.Context, storageDir string) (func(), error) {
+	lockFile, err := os.OpenFile(filepath.Join(storageDir, ".acme.lock"), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	unlock := func() {
+		_ = syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
+		_ = lockFile.Close()
+	}
+	for {
+		err = syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+		if err == nil {
+			return unlock, nil
+		}
+		if err != syscall.EWOULDBLOCK && err != syscall.EAGAIN {
+			unlock()
+			return nil, err
+		}
+		timer := time.NewTimer(100 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
+			unlock()
+			return nil, ctx.Err()
+		case <-timer.C:
+		}
+	}
+}
+
+func acmeRetryDelay(err error, attempt int) (time.Duration, bool) {
+	var acmeErr *acme.Error
+	isRateLimited := errors.As(err, &acmeErr) && acmeErr.StatusCode == http.StatusTooManyRequests
+	if !isRateLimited && !strings.Contains(strings.ToLower(err.Error()), "429") {
+		return 0, false
+	}
+
+	if acmeErr != nil && acmeErr.Header != nil {
+		if value := strings.TrimSpace(acmeErr.Header.Get("Retry-After")); value != "" {
+			if seconds, parseErr := strconv.Atoi(value); parseErr == nil && seconds >= 0 {
+				return time.Duration(seconds) * time.Second, true
+			}
+			if when, parseErr := http.ParseTime(value); parseErr == nil {
+				if delay := time.Until(when); delay > 0 {
+					return delay, true
+				}
+				return 0, true
+			}
+		}
+	}
+	if attempt < 0 {
+		attempt = 0
+	}
+	delay := time.Second << min(attempt, 6)
+	if delay > 5*time.Minute {
+		delay = 5 * time.Minute
+	}
+	return delay, true
+}
+
+func obtainACMECertificate(ctx context.Context, magic *certmagic.Config, domain string) error {
+	const maxAttempts = 4
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		err := magic.ObtainCertSync(ctx, domain)
+		if err == nil {
+			return nil
+		}
+		delay, retry := acmeRetryDelay(err, attempt)
+		if !retry || attempt == maxAttempts-1 {
+			return err
+		}
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
+	return fmt.Errorf("ACME obtain exhausted retries")
+}
+
 func (m *Manager) startACME(ctx context.Context, dnsSolver *certmagic.DNS01Solver) error {
 	// Idempotent for unchanged config: Reconfigure already tore down stale ACME state.
 	if m.acmeStarted {
 		return nil
 	}
 
-	if m.cfg.Domain == "" {
+	domain := strings.TrimSpace(m.cfg.Domain)
+	if domain == "" {
 		return fmt.Errorf("cert.domain is required for ACME modes (http/dns)")
 	}
 
@@ -416,6 +658,17 @@ func (m *Manager) startACME(ctx context.Context, dnsSolver *certmagic.DNS01Solve
 	storageDir := acmeStorageDirectory(m.cfg)
 	if err := os.MkdirAll(storageDir, 0o700); err != nil {
 		return fmt.Errorf("create shared ACME storage: %w", err)
+	}
+	acmeCtx, acmeCancel := context.WithCancel(ctx)
+	unlock, err := acquireACMELock(acmeCtx, storageDir)
+	if err != nil {
+		acmeCancel()
+		return fmt.Errorf("lock shared ACME storage: %w", err)
+	}
+	defer unlock()
+	if err := migrateACMEStorage(m.cfg.CertDir, storageDir); err != nil {
+		acmeCancel()
+		return fmt.Errorf("migrate ACME storage: %w", err)
 	}
 	storage := &certmagic.FileStorage{Path: storageDir}
 
@@ -440,12 +693,12 @@ func (m *Manager) startACME(ctx context.Context, dnsSolver *certmagic.DNS01Solve
 			if issuerKey == "" {
 				return nil
 			}
-			if err := m.loadPEMFromStorage(evtCtx, storage, issuerKey, m.cfg.Domain); err != nil {
+			if err := m.loadPEMFromStorage(evtCtx, storage, issuerKey, domain); err != nil {
 				nlog.Core().Error("failed to reload cert after renewal", "error", err)
 				return nil
 			}
 			m.renewed.Store(true)
-			nlog.Core().Info("TLS certificate reloaded after renewal", "domain", m.cfg.Domain)
+			nlog.Core().Info("TLS certificate reloaded after renewal", "domain", domain)
 			return nil
 		},
 	})
@@ -475,22 +728,22 @@ func (m *Manager) startACME(ctx context.Context, dnsSolver *certmagic.DNS01Solve
 	}
 	m.magic = magic
 
-	// Derived ctx so Reconfigure can cancel ACME background goroutines.
-	acmeCtx, acmeCancel := context.WithCancel(ctx)
-
-	if err := magic.ObtainCertSync(acmeCtx, m.cfg.Domain); err != nil {
+	if err := obtainACMECertificate(acmeCtx, magic, domain); err != nil {
 		acmeCancel()
+		m.magic = nil
 		return fmt.Errorf("obtain certificate: %w", err)
 	}
 
 	issuerKey := magic.Issuers[0].IssuerKey()
-	if err := m.loadPEMFromStorage(acmeCtx, storage, issuerKey, m.cfg.Domain); err != nil {
+	if err := m.loadPEMFromStorage(acmeCtx, storage, issuerKey, domain); err != nil {
 		acmeCancel()
+		m.magic = nil
 		return fmt.Errorf("load cert from storage: %w", err)
 	}
 
-	if err := magic.ManageAsync(acmeCtx, []string{m.cfg.Domain}); err != nil {
+	if err := magic.ManageAsync(acmeCtx, []string{domain}); err != nil {
 		acmeCancel()
+		m.magic = nil
 		return fmt.Errorf("start cert manager: %w", err)
 	}
 
@@ -500,11 +753,35 @@ func (m *Manager) startACME(ctx context.Context, dnsSolver *certmagic.DNS01Solve
 	return nil
 }
 
-func validateKeyPair(certPEM, keyPEM []byte) error {
-	if _, err := tls.X509KeyPair(certPEM, keyPEM); err != nil {
+func validateCertificatePair(certPEM, keyPEM []byte, domain string) error {
+	pair, err := tls.X509KeyPair(certPEM, keyPEM)
+	if err != nil {
 		return err
 	}
+	if len(pair.Certificate) == 0 {
+		return fmt.Errorf("certificate chain is empty")
+	}
+	leaf, err := x509.ParseCertificate(pair.Certificate[0])
+	if err != nil {
+		return fmt.Errorf("parse leaf certificate: %w", err)
+	}
+	now := time.Now()
+	if now.Before(leaf.NotBefore) {
+		return fmt.Errorf("certificate is not valid before %s", leaf.NotBefore.Format(time.RFC3339))
+	}
+	if !now.Before(leaf.NotAfter) {
+		return fmt.Errorf("certificate expired at %s", leaf.NotAfter.Format(time.RFC3339))
+	}
+	if domain = strings.TrimSpace(domain); domain != "" {
+		if err := leaf.VerifyHostname(domain); err != nil {
+			return fmt.Errorf("certificate does not cover %q: %w", domain, err)
+		}
+	}
 	return nil
+}
+
+func validateKeyPair(certPEM, keyPEM []byte) error {
+	return validateCertificatePair(certPEM, keyPEM, "")
 }
 
 // ─── DNS Provider Factory ──────────────────────────────────────────────────
@@ -554,7 +831,7 @@ func (m *Manager) loadPEMFromStorage(ctx context.Context, storage certmagic.Stor
 	if err != nil {
 		return fmt.Errorf("load key %q: %w", keyKey, err)
 	}
-	if err := validateKeyPair(certPEM, keyPEM); err != nil {
+	if err := validateCertificatePair(certPEM, keyPEM, domain); err != nil {
 		return fmt.Errorf("invalid cert/key pair on disk: %w", err)
 	}
 	m.storePEM(certPEM, keyPEM)

@@ -9,11 +9,14 @@ import (
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"math/big"
+	"net/http"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/caddyserver/certmagic"
+	"golang.org/x/crypto/acme"
 
 	"github.com/cedar2025/xboard-node/internal/config"
 )
@@ -247,5 +250,80 @@ func TestACMEStorageDirectory(t *testing.T) {
 	cfg.ACMEStorageDir = ""
 	if got := acmeStorageDirectory(cfg); got != cfg.CertDir {
 		t.Fatalf("standalone storage = %q", got)
+	}
+}
+
+func TestValidateCertificatePairChecksDomainAndValidity(t *testing.T) {
+	certPEM, keyPEM := generateSelfSignedPair(t, "node.example.test")
+	if err := validateCertificatePair(certPEM, keyPEM, "node.example.test"); err != nil {
+		t.Fatalf("valid pair rejected: %v", err)
+	}
+	if err := validateCertificatePair(certPEM, keyPEM, "other.example.test"); err == nil {
+		t.Fatal("expected hostname mismatch")
+	}
+}
+
+func TestMigrateACMEStorageDoesNotOverwriteSharedState(t *testing.T) {
+	legacyDir := t.TempDir()
+	storageDir := filepath.Join(t.TempDir(), "shared")
+	if err := os.MkdirAll(filepath.Join(legacyDir, "accounts"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(legacyDir, "accounts", "account.json"), []byte("legacy"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(legacyDir, "cert.pem"), []byte("legacy-cert"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(legacyDir, "partial.tmp"), []byte("do-not-copy"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(storageDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(storageDir, "cert.pem"), []byte("shared-cert"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := migrateACMEStorage(legacyDir, storageDir); err != nil {
+		t.Fatalf("migrateACMEStorage: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(storageDir, "cert.pem"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "shared-cert" {
+		t.Fatalf("shared certificate overwritten: %q", got)
+	}
+	got, err = os.ReadFile(filepath.Join(storageDir, "accounts", "account.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "legacy" {
+		t.Fatalf("account cache not migrated: %q", got)
+	}
+	if _, err := os.Stat(filepath.Join(storageDir, "partial.tmp")); !os.IsNotExist(err) {
+		t.Fatalf("temporary file was migrated, stat error=%v", err)
+	}
+}
+
+func TestACMERetryDelayHonorsRetryAfter(t *testing.T) {
+	err := &acme.Error{
+		StatusCode: http.StatusTooManyRequests,
+		Header:     http.Header{"Retry-After": []string{"7"}},
+	}
+	delay, retry := acmeRetryDelay(err, 0)
+	if !retry || delay != 7*time.Second {
+		t.Fatalf("retry-after seconds: delay=%s retry=%v", delay, retry)
+	}
+
+	err.Header.Set("Retry-After", time.Now().Add(2*time.Second).UTC().Format(http.TimeFormat))
+	delay, retry = acmeRetryDelay(err, 0)
+	if !retry || delay <= 0 || delay > 2*time.Second {
+		t.Fatalf("retry-after date: delay=%s retry=%v", delay, retry)
+	}
+
+	if _, retry := acmeRetryDelay(os.ErrNotExist, 0); retry {
+		t.Fatal("non-429 error should not be retried")
 	}
 }

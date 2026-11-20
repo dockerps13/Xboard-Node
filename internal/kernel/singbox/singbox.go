@@ -665,51 +665,66 @@ func (s *SingBox) reloadInboundsLocked(users []model.UserSpec) error {
 		tag := inb.Tag
 		if existing, ok := im.Get(tag); ok && existing.Type() == inb.Type {
 			var err error
+			updated := false
 			switch v := existing.(type) {
 			case adapter.UpdatableInbound[option.VMessUser]:
 				if opts, ok := inb.Options.(*option.VMessInboundOptions); ok {
+					updated = true
 					err = v.UpdateUsers(opts.Users)
 				}
 			case adapter.UpdatableInbound[option.VLESSUser]:
 				if opts, ok := inb.Options.(*option.VLESSInboundOptions); ok {
+					updated = true
 					err = v.UpdateUsers(opts.Users)
 				}
 			case adapter.UpdatableInbound[option.TrojanUser]:
 				if opts, ok := inb.Options.(*option.TrojanInboundOptions); ok {
+					updated = true
 					err = v.UpdateUsers(opts.Users)
 				}
 			case adapter.UpdatableInbound[option.Hysteria2User]:
 				if opts, ok := inb.Options.(*option.Hysteria2InboundOptions); ok {
+					updated = true
 					err = v.UpdateUsers(opts.Users)
 				}
 			case adapter.UpdatableShadowsocksInbound:
 				if opts, ok := inb.Options.(*option.ShadowsocksInboundOptions); ok {
+					updated = true
 					err = v.UpdateUsersByOptions(opts.Users)
 				}
 			case adapter.UpdatableInbound[option.TUICUser]:
 				if opts, ok := inb.Options.(*option.TUICInboundOptions); ok {
+					updated = true
 					err = v.UpdateUsers(opts.Users)
 				}
 			case adapter.UpdatableInbound[option.AnyTLSUser]:
 				if opts, ok := inb.Options.(*option.AnyTLSInboundOptions); ok {
+					updated = true
 					err = v.UpdateUsers(opts.Users)
 				}
 			case adapter.UpdatableInbound[option.MieruUser]:
 				if opts, ok := inb.Options.(*option.MieruInboundOptions); ok {
+					updated = true
 					err = v.UpdateUsers(opts.Users)
 				}
 			case adapter.UpdatableInbound[auth.User]:
 				switch opts := inb.Options.(type) {
 				case *option.NaiveInboundOptions:
+					updated = true
 					err = v.UpdateUsers(opts.Users)
 				case *option.SocksInboundOptions:
+					updated = true
 					err = v.UpdateUsers(opts.Users)
 				case *option.HTTPMixedInboundOptions:
+					updated = true
 					err = v.UpdateUsers(opts.Users)
 				}
 			}
-			if err == nil {
+			if updated && err == nil {
 				continue
+			}
+			if !updated {
+				err = fmt.Errorf("inbound %s options type %T is not compatible with existing %T", tag, inb.Options, existing)
 			}
 			nlog.Core().Warn("incremental update failed, recreating inbound", "tag", tag, "error", err)
 		}
@@ -783,9 +798,13 @@ func (s *SingBox) CloseConnection(_ context.Context, connID string) error {
 func (s *SingBox) CloseUserConnections(_ context.Context, uuid string) error {
 	s.mu.RLock()
 	trackers := append([]*ConnTracker(nil), s.retiredTrackers...)
-	if s.connTracker != nil { trackers = append(trackers, s.connTracker) }
+	if s.connTracker != nil {
+		trackers = append(trackers, s.connTracker)
+	}
 	s.mu.RUnlock()
-	for _, ct := range trackers { ct.CloseByUUID(uuid) }
+	for _, ct := range trackers {
+		ct.CloseByUUID(uuid)
+	}
 	return nil
 }
 

@@ -20,7 +20,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     env:
-      RELEASE_VERSION: ${{ contains(github.event.head_commit.message, '[publish-v1.0.0]') && 'v1.0.0' || 'v1.0.0-rc.7' }}
+      RELEASE_VERSION: v1.0.1
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -29,8 +29,8 @@ jobs:
           cache: true
       - name: Check formatting
         run: |
-          files=$(gofmt -l internal/model/kernel_selector.go internal/model/kernel_selector_test.go internal/machine/machine.go)
-          if [ -n "$files" ]; then echo "$files"; gofmt -d internal/model/kernel_selector.go internal/model/kernel_selector_test.go internal/machine/machine.go; exit 1; fi
+          files=$(gofmt -l internal)
+          if [ -n "$files" ]; then echo "$files"; gofmt -d $files; exit 1; fi
       - name: PHP syntax lint (panel integration candidate)
         run: |
           php -v
@@ -90,7 +90,7 @@ jobs:
         run: |
           ulimit -n 65536
           XBOARD_TEST_CONNECTIONS=1000 XBOARD_TEST_RESOURCE_RECOVERY=1 go test -v -count=3 -timeout 8m -tags "with_quic with_utls with_wireguard with_clash_api" ./internal/kernel/singbox -run '^TestEncryptedProtocolConcurrentLoad$'
-      - name: Build release candidate binaries
+      - name: Build release verification binaries
         if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[full-ci]')
         run: |
           make build-linux build-linux-arm64 VERSION=${RELEASE_VERSION}
@@ -98,7 +98,8 @@ jobs:
           cp xboard-node-linux-amd64 xboard-node-linux-arm64 xbctl-linux-amd64 xbctl-linux-arm64 dist/
           cp install.sh dist/install.sh
           printf '%s\n' "$GITHUB_SHA" > dist/SOURCE_COMMIT
-          (cd dist && sha256sum xboard-node-linux-* xbctl-linux-* install.sh SOURCE_COMMIT > SHA256SUMS)
+          git log -1 --pretty=format:'%h %s%n%n%b' "$GITHUB_SHA" > dist/CHANGELOG
+          (cd dist && sha256sum xboard-node-linux-* xbctl-linux-* install.sh SOURCE_COMMIT CHANGELOG > SHA256SUMS)
       - name: Smoke test native release binaries
         if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[full-ci]')
         run: |
@@ -106,45 +107,11 @@ jobs:
           ./dist/xboard-node-linux-amd64 --help
           ./dist/xbctl-linux-amd64 --help
           bash -n install.sh
-      - name: Upload release candidate binaries
+      - name: Upload release verification binaries
         if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[full-ci]')
         uses: actions/upload-artifact@v4
         with:
-          name: autokernel-release-candidate
+          name: autokernel-release-verification
           path: dist/
           if-no-files-found: error
           retention-days: 7
-
-
-  publish-v100:
-    name: Publish verified V1.0.0
-    needs: test
-    if: github.event_name == 'push' && github.ref == 'refs/heads/feature/autokernel-stage1' && contains(github.event.head_commit.message, '[publish-v1.0.0]') && contains(github.event.head_commit.message, '[full-ci]')
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      actions: read
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: autokernel-release-candidate
-          path: dist
-      - name: Verify candidate and publish
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-          RELEASE_VERSION: v1.0.0
-        run: |
-          set -euo pipefail
-          cd dist
-          sha256sum -c SHA256SUMS
-          test "$(cat SOURCE_COMMIT)" = "$GITHUB_SHA"
-          for f in xboard-node-linux-amd64 xboard-node-linux-arm64 xbctl-linux-amd64 xbctl-linux-arm64 install.sh; do test -s "$f"; done
-          bash -n install.sh
-          chmod +x xboard-node-linux-amd64
-          ./xboard-node-linux-amd64 -v | grep -F "${RELEASE_VERSION}"
-          if gh release view v1.0.0 >/dev/null 2>&1; then
-            echo "V1.0.0 already exists; refusing to overwrite"
-            exit 1
-          fi
-          gh release create v1.0.0 SHA256SUMS SOURCE_COMMIT install.sh xboard-node-linux-amd64 xboard-node-linux-arm64 xbctl-linux-amd64 xbctl-linux-arm64 --target "$GITHUB_SHA" --latest --title "V1.0.0" --notes "First stable release, based on RC.7 application code. Full CI and release artifact checks are required before publication. RC.7 field tests verified AMD64 VLESS and Shadowsocks, normal traffic accounting at rate 1, API recovery, proven-unsent retry, crash device recovery, and automatic installer rollback. The maintainer elected to publish before completing 24-hour staging and same-IP cross-node field validation; these remain pending. ARM64 is cross-built, not field-tested. Legacy XBoard APIs do not guarantee end-to-end exactly-once accounting; ambiguous batches require manual reconciliation. Distributed atomic device admission remains experimental. Rotate any previously exposed credentials before production use. Stable binaries are rebuilt with the stable version identifier; they are not byte-identical to RC.7. Source commit: ${GITHUB_SHA}; workflow: ${GITHUB_RUN_ID}."

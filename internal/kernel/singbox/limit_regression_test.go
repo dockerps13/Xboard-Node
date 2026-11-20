@@ -119,15 +119,25 @@ func TestRemovedUserClosesOnlyTheirConnections(t *testing.T) {
 	a := tracker.RoutedConnection(context.Background(), first, testInboundContext("removed", "192.0.2.1"), nil, nil)
 	b := tracker.RoutedConnection(context.Background(), second, testInboundContext("kept", "192.0.2.2"), nil, nil)
 	defer b.Close()
-	if _, err := a.Write([]byte("abc")); err != nil { t.Fatal(err) }
+	if _, err := a.Write([]byte("abc")); err != nil {
+		t.Fatal(err)
+	}
 	tracker.SetUserMap(map[string]int{"kept": 2})
-	if !first.closed || second.closed { t.Fatal("wrong connection revoked") }
-	if tracker.ActiveCount() != 1 { t.Fatal("revoked connection still counted") }
+	if !first.closed || second.closed {
+		t.Fatal("wrong connection revoked")
+	}
+	if tracker.ActiveCount() != 1 {
+		t.Fatal("revoked connection still counted")
+	}
 	traffic, _, _ := tracker.GetUserTraffic()
-	if traffic[1][1] != 3 { t.Fatal("revocation lost billable bytes") }
+	if traffic[1][1] != 3 {
+		t.Fatal("revocation lost billable bytes")
+	}
 	late := &testConn{}
 	tracker.RoutedConnection(context.Background(), late, testInboundContext("removed", "192.0.2.3"), nil, nil)
-	if !late.closed || tracker.ActiveCount() != 1 { t.Fatal("removed user re-admitted") }
+	if !late.closed || tracker.ActiveCount() != 1 {
+		t.Fatal("removed user re-admitted")
+	}
 }
 
 func TestLimitedTCPDoesNotAdvertiseReplaceableIO(t *testing.T) {
@@ -136,7 +146,6 @@ func TestLimitedTCPDoesNotAdvertiseReplaceableIO(t *testing.T) {
 		t.Fatal("limited TCP path must not advertise replaceable I/O")
 	}
 }
-
 
 func TestGlobalDeviceAliasesCountOnce(t *testing.T) {
 	tr := NewConnTracker(0)
@@ -167,5 +176,19 @@ func TestGlobalDeviceAliasesDoNotConsumeExtraSlots(t *testing.T) {
 	}
 	if tr.admitDevice(us, 1, "192.0.2.3", 2) {
 		t.Fatal("third device admitted")
+	}
+}
+
+func TestRemovedUserGlobalDevicesAreDiscarded(t *testing.T) {
+	tr := NewConnTracker(0)
+	tr.UpdateGlobalDevices(map[int][]string{7: {"192.0.2.7"}})
+	tr.SetUserMap(map[string]int{"user-7": 7})
+	tr.SetUserMap(map[string]int{})
+
+	tr.globalMu.RLock()
+	_, exists := tr.globalDevices[7]
+	tr.globalMu.RUnlock()
+	if exists {
+		t.Fatal("global device snapshot survived user removal")
 	}
 }

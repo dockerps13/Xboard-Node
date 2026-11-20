@@ -124,16 +124,16 @@ func (u *userStats) aliveIPList() map[string]bool {
 //   - Close callback to decrement IP refcounts
 //   - Per-connection rate limit token accumulation (amortized WaitN)
 type trackedReference struct {
-	uuid string
+	uuid   string
 	closer io.Closer
 }
 
 type ConnTracker struct {
-	usersMu sync.RWMutex
-	users   map[int]*userStats  // userID → stats
-	identityAliases map[string]string // protocol username -> canonical UUID
-	uuidMap map[string]int      // UUID → userID (for lookup in RoutedConnection)
-	connMap map[string]trackedReference // connID → conn (only for force-close support)
+	usersMu         sync.RWMutex
+	users           map[int]*userStats          // userID → stats
+	identityAliases map[string]string           // protocol username -> canonical UUID
+	uuidMap         map[string]int              // UUID → userID (for lookup in RoutedConnection)
+	connMap         map[string]trackedReference // connID → conn (only for force-close support)
 
 	idCounter atomic.Int64
 
@@ -192,7 +192,27 @@ func (t *ConnTracker) setUserIdentities(m map[string]int, aliases map[string]str
 		}
 	}
 	t.usersMu.Unlock()
-	for _, c := range revoked { _ = c.Close() }
+
+	// A removed user must not leave a global device snapshot behind. Besides
+	// wasting memory, stale entries could grant a re-created user ID access to
+	// an old node's device allowance before the next panel snapshot arrives.
+	t.globalMu.Lock()
+	for uid := range t.globalDevices {
+		keep := false
+		for _, mapped := range m {
+			if mapped == uid {
+				keep = true
+				break
+			}
+		}
+		if !keep {
+			delete(t.globalDevices, uid)
+		}
+	}
+	t.globalMu.Unlock()
+	for _, c := range revoked {
+		_ = c.Close()
+	}
 }
 
 // UpdateGlobalDevices syncs global device state from panel.
@@ -446,7 +466,9 @@ func (t *ConnTracker) CloseByID(id string) bool {
 	t.usersMu.RLock()
 	ref, ok := t.connMap[id]
 	t.usersMu.RUnlock()
-	if ok { _ = ref.closer.Close() }
+	if ok {
+		_ = ref.closer.Close()
+	}
 	return ok
 }
 
@@ -454,10 +476,14 @@ func (t *ConnTracker) CloseByUUID(uuid string) int {
 	t.usersMu.RLock()
 	var conns []io.Closer
 	for _, ref := range t.connMap {
-		if ref.uuid == uuid { conns = append(conns, ref.closer) }
+		if ref.uuid == uuid {
+			conns = append(conns, ref.closer)
+		}
 	}
 	t.usersMu.RUnlock()
-	for _, c := range conns { _ = c.Close() }
+	for _, c := range conns {
+		_ = c.Close()
+	}
 	return len(conns)
 }
 
