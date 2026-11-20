@@ -1,7 +1,6 @@
 package cert
 
 import (
-	"fmt"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -9,6 +8,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"fmt"
 	"math/big"
 	"net/http"
 	"os"
