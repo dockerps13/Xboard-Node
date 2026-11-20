@@ -6,7 +6,8 @@ Node backend for [Xboard](https://github.com/cedar2025/Xboard). Supports `sing-b
 
 ## Features
 
-- Protocols: V2Ray family, Trojan, Shadowsocks, Hysteria2, TUIC, AnyTLS
+- Protocols: VLESS/VMess, Trojan, Shadowsocks, Hysteria2, TUIC, SOCKS5,
+  HTTP/HTTPS, AnyTLS, Mieru, and Naive (kernel/client support varies)
 - Sync: WebSocket push + REST polling dual channel
 - User controls: speed limit, device limit, alive-IP tracking, hot update
 - Deploy modes: node mode, machine mode, standalone mode
@@ -14,33 +15,11 @@ Node backend for [Xboard](https://github.com/cedar2025/Xboard). Supports `sing-b
 
 ## Install
 
-### Docker
+This fork's Linux systemd releases are published at [dockerps13/Xboard-Node Releases](https://github.com/dockerps13/Xboard-Node/releases). See the [deployment and operations guide](docs/deployment.md) for pinned version installation, upgrade, backup, rollback and troubleshooting.
 
-```bash
-docker run -d --restart=always --network=host \
-  -e apiHost=https://panel.com -e apiKey=TOKEN -e nodeID=1 \
-  ghcr.io/cedar2025/xboard-node:latest
-```
+**Current release status:** V1.0.1 is in final release preparation and has not been published. V1.0.0 remains the production baseline. Do not install from a moving branch, use `latest`, or treat the upstream Docker image as a validated V1.0.1 build. After approval, use the exact V1.0.1 tag together with its `SOURCE_COMMIT` and `SHA256SUMS`.
 
-### Docker Compose
-
-```bash
-git clone -b compose --depth 1 https://github.com/cedar2025/xboard-node.git
-cd xboard-node
-vim config/config.yml   # set panel.url / token / node_id
-docker compose up -d
-```
-
-### Installer (Linux systemd)
-
-```bash
-# Node mode
-curl -fsSL https://raw.githubusercontent.com/cedar2025/xboard-node/dev/install.sh | \
-  sudo bash -s -- --mode node --panel https://panel.example.com --token TOKEN --node-id 1
-
-# Machine mode
-curl -fsSL https://raw.githubusercontent.com/cedar2025/xboard-node/dev/install.sh | \
-  sudo bash -s -- --mode machine --panel https://panel.example.com --token TOKEN --machine-id 1
+Docker examples from the upstream project are not release-validated deployment instructions for this fork.
 
 ## xbctl
 

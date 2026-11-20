@@ -164,10 +164,10 @@ func TestFlushAliveIPs(t *testing.T) {
 		t.Errorf("user 2 IPs: got %d, want 1", len(flushed[2]))
 	}
 
-	// Without another Process call, hash is same → returns nil (skip duplicate)
+	// Unchanged active users must refresh the panel's finite Redis TTL.
 	flushed2 := tr.FlushAliveIPs()
-	if flushed2 != nil {
-		t.Errorf("expected nil on duplicate flush, got %v", flushed2)
+	if len(flushed2[1]) != 2 || len(flushed2[2]) != 1 {
+		t.Fatalf("missing periodic refresh: %v", flushed2)
 	}
 }
 
@@ -228,5 +228,82 @@ func TestTrafficAccumulation(t *testing.T) {
 	// Total: 100+200+50 = 350 upload, 200+300+100 = 600 download
 	if flushed[1] != [2]int64{350, 600} {
 		t.Errorf("accumulated: got %v, want [350,600]", flushed[1])
+	}
+}
+
+func TestAliveFlushOwnsSnapshotAndRetriesLatest(t *testing.T) {
+	tr := New()
+	tr.Process(nil, map[int]map[string]bool{1: {"192.0.2.1": true}}, 1)
+	first := tr.FlushAliveIPs()
+	tr.Process(nil, map[int]map[string]bool{2: {"192.0.2.2": true}}, 1)
+	second := tr.FlushAliveIPs()
+	if len(first[1]) != 1 || len(first[2]) != 0 || len(second[2]) != 1 {
+		t.Fatal("subsequent flush mutated previous output")
+	}
+	tr.RestoreAliveIPs(first)
+	retry := tr.FlushAliveIPs()
+	if len(retry[1]) != 0 || len(retry[2]) != 1 {
+		t.Fatal("retry must use current snapshot, not stale addresses")
+	}
+}
+
+func TestOfflineNoticeRetriedUntilAcknowledged(t *testing.T) {
+	tr := New()
+	tr.Process(nil, map[int]map[string]bool{1: {"192.0.2.1": true}}, 1)
+	tr.AcknowledgeAliveIPs(tr.FlushAliveIPs())
+	tr.Process(nil, nil, 0)
+	// WS cannot consume the HTTP offline notice.
+	tr.FlushWSAliveIPs()
+	for i := 0; i < 2; i++ {
+		out := tr.FlushAliveIPs()
+		if out[1] == nil || len(out[1]) != 0 {
+			t.Fatalf("missing explicit empty slice: %v", out)
+		}
+		tr.RestoreAliveIPs(out)
+	}
+	tr.AcknowledgeAliveIPs(tr.FlushAliveIPs())
+	if len(tr.FlushAliveIPs()) != 0 {
+		t.Fatal("acknowledged offline notice retained")
+	}
+}
+
+func TestCanonicalDeviceAddressesAcrossNodes(t *testing.T) {
+	a, b := New(), New()
+	a.Process(nil, map[int]map[string]bool{1: {"192.0.2.1": true, "::ffff:192.0.2.1": true}}, 2)
+	b.Process(nil, map[int]map[string]bool{1: {"192.0.2.1:1234": true, "2001:0db8:0:0::1": true, "[2001:db8::1]:443": true}}, 3)
+	// Mirror the panel's per-user union of canonical IP strings.
+	union := map[string]bool{}
+	for _, tr := range []*Tracker{a, b} {
+		for _, ip := range tr.FlushAliveIPs()[1] {
+			union[ip] = true
+		}
+	}
+	if len(union) != 2 || !union["192.0.2.1"] || !union["2001:db8::1"] {
+		t.Fatalf("incorrect cross-node union: %v", union)
+	}
+}
+
+func TestClearLiveDevicesPreservesTrafficAndOfflineNotice(t *testing.T) {
+	tr := New()
+	tr.Process(map[int][2]int64{2: {100, 200}}, map[int]map[string]bool{2: {"192.0.2.1": true}}, 1)
+	tr.AcknowledgeAliveIPs(tr.FlushAliveIPs())
+	tr.ClearLiveDevices()
+	if len(tr.CurrentOnline()) != 0 || tr.ActiveConnections() != 0 {
+		t.Fatal("stopped kernel still appears online")
+	}
+	alive := tr.FlushAliveIPs()
+	if ips, ok := alive[2]; !ok || ips == nil || len(ips) != 0 {
+		t.Fatalf("missing explicit offline notice: %#v", alive)
+	}
+	if traffic := tr.FlushTraffic(); traffic[2] != [2]int64{100, 200} {
+		t.Fatalf("shutdown discarded traffic: %#v", traffic)
+	}
+	tr.RestoreAliveIPs(alive)
+	if _, ok := tr.FlushAliveIPs()[2]; !ok {
+		t.Fatal("failed offline notice was lost")
+	}
+	tr.AcknowledgeAliveIPs(alive)
+	if len(tr.FlushAliveIPs()) != 0 {
+		t.Fatal("confirmed offline notice was not cleared")
 	}
 }

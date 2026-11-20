@@ -19,14 +19,14 @@ import (
 )
 
 type Config struct {
-	InstanceID string `yaml:"-"`
-	Panel   PanelConfig   `yaml:"panel"`
-	Node    NodeConfig    `yaml:"node"`
-	Kernel  KernelConfig  `yaml:"kernel"`
-	Cert    CertConfig    `yaml:"cert"`
-	Log     LogConfig     `yaml:"log"`
-	Runtime RuntimeConfig `yaml:"runtime"`
-	WS      WSConfig      `yaml:"ws"`
+	InstanceID string        `yaml:"-"`
+	Panel      PanelConfig   `yaml:"panel"`
+	Node       NodeConfig    `yaml:"node"`
+	Kernel     KernelConfig  `yaml:"kernel"`
+	Cert       CertConfig    `yaml:"cert"`
+	Log        LogConfig     `yaml:"log"`
+	Runtime    RuntimeConfig `yaml:"runtime"`
+	WS         WSConfig      `yaml:"ws"`
 	// Standalone enables a local-only node that never contacts the panel.
 	Standalone *StandaloneConfig `yaml:"standalone,omitempty"`
 	// HealthPort enables a lightweight HTTP health-check endpoint on the
@@ -145,13 +145,14 @@ type KernelConfig struct {
 }
 
 type CertConfig struct {
-	AutoTLS  bool   `yaml:"auto_tls"`
-	Domain   string `yaml:"domain"`
-	Email    string `yaml:"email"`
-	CertFile string `yaml:"cert_file"`
-	KeyFile  string `yaml:"key_file"`
-	CertDir  string `yaml:"cert_dir"`
-	HTTPPort int    `yaml:"http_port"` // port for HTTP-01 challenge (default: 80)
+	AutoTLS        bool   `yaml:"auto_tls"`
+	Domain         string `yaml:"domain"`
+	Email          string `yaml:"email"`
+	CertFile       string `yaml:"cert_file"`
+	KeyFile        string `yaml:"key_file"`
+	CertDir        string `yaml:"cert_dir"`
+	ACMEStorageDir string `yaml:"-"`         // machine-local shared ACME storage
+	HTTPPort       int    `yaml:"http_port"` // port for HTTP-01 challenge (default: 80)
 
 	// CertMode selects the TLS certificate strategy:
 	//   ""       - auto-detect: if CertFile is set → file; if AutoTLS → http; else none
@@ -787,6 +788,11 @@ func (c *Config) ExpandNodes() []*Config {
 		if nodeCfg.Cert.CertDir == "" {
 			nodeCfg.Cert.CertDir = filepath.Join(nodeCfg.Kernel.ConfigDir, "certs")
 		}
+		// All nodes expanded from one ordinary multi-node instance share the
+		// machine-local ACME account and certificate store. Keep each node's
+		// cert_dir separate for legacy file persistence, while making ACME
+		// obtain/renewal storage common just like machine mode.
+		nodeCfg.Cert.ACMEStorageDir = filepath.Join(c.Kernel.ConfigDir, "shared-acme")
 
 		result = append(result, &nodeCfg)
 	}
@@ -806,6 +812,7 @@ func (c *Config) ExpandMachineNode(nodeID int, nodeType string) *Config {
 		nodeCfg.Kernel.GeoDataDir = c.Kernel.GeoDataDir
 	}
 	nodeCfg.Cert.CertDir = filepath.Join(nodeCfg.Kernel.ConfigDir, "certs")
+	nodeCfg.Cert.ACMEStorageDir = filepath.Join(c.Kernel.ConfigDir, "shared-acme")
 
 	return &nodeCfg
 }

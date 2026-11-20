@@ -85,6 +85,34 @@ func TestNodeConfig_UnmarshalWithPaddingSchemeString(t *testing.T) {
 	}
 }
 
+func TestNodeConfig_PreservesXboardProtocolCompatibilityFields(t *testing.T) {
+	input := `{
+		"protocol": "mieru",
+		"server_port": 443,
+		"networkSettings": {"acceptProxyProtocol": true},
+		"transport": "UDP",
+		"traffic_pattern": "VV2",
+		"cert_config": {"mode": "content", "domain": "node.example.test"},
+		"tls_settings": {"server_name": "node.example.test", "allow_insecure": false}
+	}`
+	var nc NodeConfig
+	if err := json.Unmarshal([]byte(input), &nc); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if nc.Transport != "UDP" || nc.TrafficPattern != "VV2" {
+		t.Fatalf("Mieru fields lost: transport=%q pattern=%q", nc.Transport, nc.TrafficPattern)
+	}
+	if !nc.GetProxyProtocol() {
+		t.Fatal("networkSettings proxy protocol field was not preserved")
+	}
+	if nc.CertConfig == nil || nc.CertConfig.CertMode != "content" {
+		t.Fatalf("cert mode alias not preserved: %#v", nc.CertConfig)
+	}
+	if got, ok := nc.TLSSettings["server_name"].(string); !ok || got != "node.example.test" {
+		t.Fatalf("TLS server_name lost: %#v", nc.TLSSettings)
+	}
+}
+
 func TestNodeConfig_UnmarshalFullPanelResponse(t *testing.T) {
 	input := `{
 		"protocol": "shadowsocks",

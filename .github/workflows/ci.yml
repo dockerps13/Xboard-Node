@@ -20,7 +20,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.25.7'
+          go-version-file: go.mod
           cache: true
 
       - name: Run tests
@@ -43,7 +43,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.25.7'
+          go-version-file: go.mod
           cache: true
 
       - name: Build
@@ -98,15 +98,17 @@ jobs:
           push: true
           platforms: linux/amd64,linux/arm64
           tags: |
-            ghcr.io/cedar2025/xboard-node:latest
-            ghcr.io/cedar2025/xboard-node:${{ github.sha }}
-            ${{ startsWith(github.ref, 'refs/tags/') && format('ghcr.io/cedar2025/xboard-node:{0}', github.ref_name) || '' }}
+            ghcr.io/dockerps13/xboard-node:latest
+            ghcr.io/dockerps13/xboard-node:${{ github.sha }}
+            ${{ startsWith(github.ref, 'refs/tags/') && format('ghcr.io/dockerps13/xboard-node:{0}', github.ref_name) || '' }}
 
   release:
     name: Release
     runs-on: ubuntu-latest
     needs: build
-    if: startsWith(github.ref, 'refs/tags/') || github.ref == 'refs/heads/dev'
+    # Only the explicitly approved stable version can create a Release. This
+    # prevents RC/Beta tags from being published or marked latest.
+    if: github.ref == 'refs/tags/v1.0.1'
     permissions:
       contents: write
     steps:
@@ -116,13 +118,27 @@ jobs:
         with:
           merge-multiple: true
           path: dist
+      - name: Prepare release metadata
+        env:
+          SOURCE_COMMIT: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          test "${GITHUB_REF_NAME}" = "v1.0.1"
+          cp install.sh dist/install.sh
+          printf '%s\n' "$SOURCE_COMMIT" > dist/SOURCE_COMMIT
+          cp CHANGELOG.md dist/CHANGELOG
+          (cd dist && sha256sum xboard-node-linux-amd64 xboard-node-linux-arm64 xbctl-linux-amd64 xbctl-linux-arm64 install.sh SOURCE_COMMIT CHANGELOG > SHA256SUMS)
       - name: Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'dev' }}
-          make_latest: ${{ startsWith(github.ref, 'refs/tags/') }}
+          tag_name: ${{ github.ref_name }}
+          make_latest: true
           files: |
             dist/xboard-node-linux-amd64
             dist/xboard-node-linux-arm64
             dist/xbctl-linux-amd64
             dist/xbctl-linux-arm64
+            dist/install.sh
+            dist/SHA256SUMS
+            dist/SOURCE_COMMIT
+            dist/CHANGELOG

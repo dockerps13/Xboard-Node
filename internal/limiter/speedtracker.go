@@ -58,9 +58,13 @@ func (t *SpeedTracker) UpdateBuckets() {
 
 		newUUIDMap := make(map[string]int, len(currentUsers))
 		activeIDs := make(map[int]struct{}, len(currentUsers))
+		configured := false
 
 		for _, user := range currentUsers {
 			activeIDs[user.ID] = struct{}{}
+			if user.SpeedLimit > 0 {
+				configured = true
+			}
 			if user.UUID != "" {
 				newUUIDMap[user.UUID] = user.ID
 			}
@@ -76,6 +80,7 @@ func (t *SpeedTracker) UpdateBuckets() {
 					lim.SetLimit(rate.Limit(bytesPerSec))
 					lim.SetBurst(burst)
 				} else {
+					lim.SetLimit(rate.Inf)
 					delete(t.buckets, user.ID)
 				}
 			}
@@ -89,7 +94,7 @@ func (t *SpeedTracker) UpdateBuckets() {
 		}
 
 		t.uuidMap = newUUIDMap
-		t.hasLimits.Store(len(t.buckets) > 0)
+		t.hasLimits.Store(configured)
 	}()
 
 	if t.logFunc != nil {
@@ -135,6 +140,11 @@ func (t *SpeedTracker) GetLimiter(user string) *rate.Limiter {
 	lim := rate.NewLimiter(rate.Limit(bytesPerSec), burst)
 
 	t.mu.Lock()
+	// A user may have been removed since the initial lookup.
+	if currentID, ok := t.uuidMap[user]; !ok || currentID != uid {
+		t.mu.Unlock()
+		return nil
+	}
 	// Double-check after acquiring write lock
 	if existing, ok := t.buckets[uid]; ok {
 		t.mu.Unlock()

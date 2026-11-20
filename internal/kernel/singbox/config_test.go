@@ -425,7 +425,9 @@ func TestBuildInbound_Naive(t *testing.T) {
 	assertMapValue(t, inbound, "type", "naive")
 
 	users := inbound["users"].([]M)
-	assertMapValue(t, users[0], "username", "1")
+	assertMapValue(t, users[0], "username", "aaaaaaaa-1111-2222-3333-444444444444")
+	assertMapValue(t, users[1], "username", "1")
+	assertMapValue(t, users[1], "password", "aaaaaaaa-1111-2222-3333-444444444444")
 	assertMapValue(t, users[0], "password", "aaaaaaaa-1111-2222-3333-444444444444")
 
 	tls := inbound["tls"].(M)
@@ -886,4 +888,58 @@ func TestExtractECHInbound(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestBuildInbound_Hysteria2Alias(t *testing.T) {
+	node := testNodeSpec(&panel.NodeConfig{
+		Protocol:   "hysteria2",
+		ServerPort: 8443,
+	})
+	inbound := buildInbound(node, testUsers, kernel.TLSCert{})
+	if inbound == nil {
+		t.Fatal("hysteria2 alias should build a valid inbound")
+	}
+	assertMapValue(t, inbound, "type", "hysteria2")
+	if len(inbound["users"].([]M)) != len(testUsers) {
+		t.Fatalf("unexpected hysteria2 users: %v", inbound["users"])
+	}
+}
+
+func TestBuildInboundMieruDefaultsToTCP(t *testing.T) {
+	for _, tc := range []struct{ name, provided, want string }{
+		{"omitted", "", "TCP"},
+		{"lowercase", "udp", "UDP"},
+		{"padded", " tcp ", "TCP"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			n := model.NodeSpec{Protocol: "mieru", ServerPort: 10080, Transport: tc.provided}
+			got := buildInbound(&n, testUsers, kernel.TLSCert{})
+			assertMapValue(t, got, "transport", tc.want)
+		})
+	}
+}
+
+func TestBuildInbound_RespectsPanelListenIP(t *testing.T) {
+	nc := testNodeSpec(&panel.NodeConfig{Protocol: "shadowsocks", Cipher: "aes-128-gcm", ListenIP: "127.0.0.1", ServerPort: 8388})
+	inbound := buildInbound(nc, testUsers, kernel.TLSCert{})
+	assertMapValue(t, inbound, "listen", "127.0.0.1")
+}
+
+func TestBuildInbound_NaiveUsesRaceFreeTCPByDefault(t *testing.T) {
+	nc := testNodeSpec(&panel.NodeConfig{Protocol: "naive", ServerPort: 8443, TLS: 1})
+	inbound := buildInbound(nc, testUsers, kernel.TLSCert{})
+	assertMapValue(t, inbound, "type", "naive")
+	assertMapValue(t, inbound, "network", "tcp")
+}
+
+// The h2 transport alias must be normalized even without optional settings.
+func TestApplyTransportH2WithoutSettings(t *testing.T) {
+	base := M{}
+	nc := &panel.NodeConfig{Network: "h2"}
+	applyTransport(base, testNodeSpec(nc))
+	transport, ok := base["transport"].(M)
+	if !ok {
+		t.Fatal("missing transport")
+	}
+	assertMapValue(t, transport, "type", "http")
 }

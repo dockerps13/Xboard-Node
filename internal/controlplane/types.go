@@ -35,20 +35,26 @@ type APIMetrics struct {
 }
 
 type Bootstrap struct {
-	PushInterval int
-	PullInterval int
-	Push         PushClient
-	Config       *model.NodeSpec
-	Users        []model.UserSpec
-	Mailbox      *NodeMailbox
+	DeviceUsers       map[int][]string
+	IdempotentReports bool // panel explicitly confirms atomic report-ID deduplication
+	PushInterval      int
+	PullInterval      int
+	Push              PushClient
+	Config            *model.NodeSpec
+	Users             []model.UserSpec
+	Mailbox           *NodeMailbox
 }
 
 type Snapshot struct {
-	Config *model.NodeSpec
-	Users  []model.UserSpec
+	DeviceUsers map[int][]string
+	Config      *model.NodeSpec
+	Users       []model.UserSpec
 }
 
 type ReportPayload struct {
+	// BatchID is emitted only with a panel that explicitly supports durable
+	// idempotent reporting. Empty preserves the existing XBoard API.
+	BatchID string
 	Traffic map[int][2]int64
 	Alive   map[int][]string
 	Online  map[int]int

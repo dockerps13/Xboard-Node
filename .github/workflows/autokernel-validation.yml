@@ -1,0 +1,120 @@
+name: AutoKernel validation
+
+on:
+  push:
+    branches:
+      - feature/autokernel-stage1
+      - 'feature/autokernel-*'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: autokernel-validation-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Go test and compile
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      RELEASE_VERSION: v1.0.1
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Check formatting
+        run: |
+          files=$(git ls-files '*.go' | xargs -r gofmt -l)
+          if [ -n "$files" ]; then echo "$files"; gofmt -d $files; exit 1; fi
+      - name: PHP syntax lint (panel integration candidate)
+        run: |
+          php -v
+          find integrations -name '*.php' -print0 |
+            xargs -0 -n 1 php -l
+          php integrations/xboard-device-snapshots/tests/snapshot.php
+      - name: Redis device reservation concurrency tests
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y redis-server
+          bash integrations/xboard-device-snapshots/tests/reservation.sh
+      - name: Installer safety tests
+        run: |
+          bash -n install.sh
+          bash tests/installer-safety.sh
+      - name: Selector unit tests
+        run: go test ./internal/model -run TestResolveKernelForNode -count=1
+      - name: Complete test suite
+        run: go test -tags "with_quic with_utls with_wireguard with_clash_api" ./...
+      - name: Static analysis
+        run: go vet -tags "with_quic with_utls with_wireguard with_clash_api" ./...
+      - name: Race-sensitive kernel and control-plane tests
+        if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[full-ci]')
+        run: go test -race -tags "with_quic with_utls with_wireguard with_clash_api" ./internal/model ./internal/machine ./internal/controlplane ./internal/limiter ./internal/tracker ./internal/reportjournal ./internal/service ./internal/panel ./internal/kernel/singbox ./internal/kernel/xray ./internal/kernel/obfs ./internal/monitor
+      - name: AnyTLS fork race and security regression tests
+        if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[full-ci]')
+        working-directory: third_party/sing-anytls
+        run: go test -race ./...
+      - name: Naive real client interoperability (test-only build)
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          module=github.com/sagernet/cronet-go/lib/linux_amd64
+          go mod download "$module"
+          libdir=$(go list -m -f '{{.Dir}}' "$module")
+          test -f "$libdir/libcronet.so"
+          scratch=$(mktemp -d)
+          trap 'rm -rf "$scratch"' EXIT
+          cp "$libdir/libcronet.so" "$scratch/"
+          export LD_LIBRARY_PATH="$scratch"
+          go test -c -tags "with_quic with_utls with_wireguard with_clash_api with_naive_outbound with_purego" -o "$scratch/naive.test" ./internal/kernel/singbox
+          "$scratch/naive.test" -test.v -test.count=1 -test.timeout=3m -test.run '^TestNaiveClientRoundTrip$'
+      - name: Mixed protocol concurrent load (100 to 5000)
+        if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[full-ci]')
+        run: |
+          ulimit -n 65536
+          for n in 100 500 1000 5000; do
+            XBOARD_TEST_CONNECTIONS="$n" go test -v -count=1 -timeout 3m -tags "with_quic with_utls with_wireguard with_clash_api" ./internal/kernel/singbox -run '^TestMixedProtocolConcurrentLoad$'
+          done
+      - name: Encrypted protocol concurrent load and repeated recovery
+        if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[full-ci]')
+        run: |
+          ulimit -n 65536
+          for n in 500 1000 5000; do
+            XBOARD_TEST_CONNECTIONS="$n" go test -v -count=1 -timeout 3m -tags "with_quic with_utls with_wireguard with_clash_api" ./internal/kernel/singbox -run '^TestEncryptedProtocolConcurrentLoad$'
+          done
+          XBOARD_TEST_CONNECTIONS=1000 go test -v -count=5 -timeout 5m -tags "with_quic with_utls with_wireguard with_clash_api" ./internal/kernel/singbox -run '^TestEncryptedProtocolConcurrentLoad$'
+      - name: Repeated encrypted connection resource recovery
+        if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[full-ci]')
+        run: |
+          ulimit -n 65536
+          XBOARD_TEST_CONNECTIONS=1000 XBOARD_TEST_RESOURCE_RECOVERY=1 go test -v -count=3 -timeout 8m -tags "with_quic with_utls with_wireguard with_clash_api" ./internal/kernel/singbox -run '^TestEncryptedProtocolConcurrentLoad$'
+      - name: Build release verification binaries
+        if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[full-ci]')
+        run: |
+          make build-linux build-linux-arm64 VERSION=${RELEASE_VERSION}
+          mkdir -p dist
+          cp xboard-node-linux-amd64 xboard-node-linux-arm64 xbctl-linux-amd64 xbctl-linux-arm64 dist/
+          cp install.sh dist/install.sh
+          printf '%s\n' "$GITHUB_SHA" > dist/SOURCE_COMMIT
+          git log -1 --pretty=format:'%h %s%n%n%b' "$GITHUB_SHA" > dist/CHANGELOG
+          (cd dist && sha256sum xboard-node-linux-* xbctl-linux-* install.sh SOURCE_COMMIT CHANGELOG > SHA256SUMS)
+      - name: Smoke test native release binaries
+        if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[full-ci]')
+        run: |
+          ./dist/xboard-node-linux-amd64 -v | grep -F "${RELEASE_VERSION}"
+          ./dist/xboard-node-linux-amd64 --help
+          ./dist/xbctl-linux-amd64 --help
+          bash -n install.sh
+      - name: Upload release verification binaries
+        if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[full-ci]')
+        uses: actions/upload-artifact@v4
+        with:
+          name: autokernel-release-verification
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
