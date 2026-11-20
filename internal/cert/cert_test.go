@@ -634,3 +634,69 @@ func TestACMECooldownSurvivesManagersAndIsolatesDomains(t *testing.T) {
 		t.Fatalf("cooldown marker not cleared: %v", err)
 	}
 }
+
+func TestSharedCertificateRefreshPropagatesRenewal(t *testing.T) {
+	dir := t.TempDir()
+	storage := &certmagic.FileStorage{Path: dir}
+	const domain = "shared-refresh.example.test"
+	const issuer = "test-issuer"
+	ctx := context.Background()
+	writePair := func(certPEM, keyPEM []byte) {
+		t.Helper()
+		if err := storage.Store(ctx, certmagic.StorageKeys.SiteCert(issuer, domain), certPEM); err != nil {
+			t.Fatal(err)
+		}
+		if err := storage.Store(ctx, certmagic.StorageKeys.SitePrivateKey(issuer, domain), keyPEM); err != nil {
+			t.Fatal(err)
+		}
+	}
+	firstCert, firstKey := generateSelfSignedPair(t, domain)
+	writePair(firstCert, firstKey)
+	m := NewManager(config.CertConfig{Domain: domain, CertDir: t.TempDir()})
+	m.acmeStarted = true
+	m.acmeStorage = storage
+	m.acmeIssuerKey = issuer
+	m.acmeDomain = domain
+	if changed, err := m.RefreshSharedCertificate(ctx); err != nil || !changed {
+		t.Fatalf("initial refresh: changed=%v err=%v", changed, err)
+	}
+	if changed, err := m.RefreshSharedCertificate(ctx); err != nil || changed {
+		t.Fatalf("unchanged refresh: changed=%v err=%v", changed, err)
+	}
+	nextCert, nextKey := generateSelfSignedPair(t, domain)
+	writePair(nextCert, nextKey)
+	if changed, err := m.RefreshSharedCertificate(ctx); err != nil || !changed {
+		t.Fatalf("renewal refresh: changed=%v err=%v", changed, err)
+	}
+	if string(m.TLSCert().CertPEM) != string(nextCert) {
+		t.Fatal("renewed material not loaded")
+	}
+	wrongCert, wrongKey := generateSelfSignedPair(t, "other.example.test")
+	writePair(wrongCert, wrongKey)
+	if changed, err := m.RefreshSharedCertificate(ctx); err == nil || changed {
+		t.Fatalf("wrong domain accepted: changed=%v err=%v", changed, err)
+	}
+	if string(m.TLSCert().CertPEM) != string(nextCert) {
+		t.Fatal("valid material replaced by wrong domain")
+	}
+}
+
+func TestMigrationDoesNotCopyFlatPEMOrLocks(t *testing.T) {
+	legacy, shared := t.TempDir(), t.TempDir()
+	for _, name := range []string{"cert.pem", "key.pem", ".acme-retry-old"} {
+		if err := os.WriteFile(filepath.Join(legacy, name), []byte("legacy"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Mkdir(filepath.Join(legacy, "locks"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := migrateACMEStorage(legacy, shared); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"cert.pem", "key.pem", ".acme-retry-old", "locks"} {
+		if _, err := os.Stat(filepath.Join(shared, name)); !os.IsNotExist(err) {
+			t.Fatalf("unexpected shared entry %s: %v", name, err)
+		}
+	}
+}

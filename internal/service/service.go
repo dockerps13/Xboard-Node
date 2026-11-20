@@ -476,6 +476,11 @@ func (s *Service) handleCertificateState(ctx context.Context) {
 	}
 
 	renewed := s.cert.CertRenewed()
+	sharedChanged, err := s.cert.RefreshSharedCertificate(ctx)
+	if err != nil {
+		nlog.Core().Debug("shared certificate refresh failed", "error", err)
+	}
+	renewed = renewed || sharedChanged
 	recovered := false
 	if s.certApplyFailed || (s.lastConfig != nil && requiresCertificate(s.lastConfig) && !s.cert.HasCert()) {
 		if err := s.cert.Start(ctx); err != nil {
@@ -736,7 +741,8 @@ func (s *Service) pullViaAPIAsync(ctx context.Context) {
 	}
 
 	currentConfigHash := s.lastConfigHash
-	certChanged := s.cert.CertRenewed()
+	// Certificate recovery ticker owns renewal notifications.
+	certChanged := false
 
 	go func() {
 		defer s.pullActive.Store(false)

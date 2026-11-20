@@ -67,6 +67,9 @@ type Manager struct {
 	acmeStarted     bool
 	acmeFingerprint string
 	acmeCancel      context.CancelFunc
+	acmeStorage     certmagic.Storage
+	acmeIssuerKey   string
+	acmeDomain      string
 }
 
 // certMaterial is an immutable snapshot of PEM-encoded cert + key.
@@ -166,6 +169,10 @@ func (m *Manager) Reconfigure(ctx context.Context, newCfg config.CertConfig) (bo
 	if newCfg.CertDir == "" {
 		newCfg.CertDir = m.cfg.CertDir
 	}
+	if newCfg.ACMEStorageDir == "" {
+		newCfg.ACMEStorageDir = m.cfg.ACMEStorageDir
+	}
+	oldTLS := m.TLSCert()
 
 	// If ACME is running and the new config materially differs (or switches
 	// away from ACME), tear down the old certmagic instance first.
@@ -177,7 +184,6 @@ func (m *Manager) Reconfigure(ctx context.Context, newCfg config.CertConfig) (bo
 		}
 	}
 
-	oldTLS := m.TLSCert()
 	m.cfg = newCfg
 
 	if err := m.Start(ctx); err != nil {
@@ -202,6 +208,10 @@ func (m *Manager) tearDownACME() {
 	m.magic = nil
 	m.acmeStarted = false
 	m.acmeFingerprint = ""
+	m.acmeStorage = nil
+	m.acmeIssuerKey = ""
+	m.acmeDomain = ""
+	m.renewed.Store(false)
 	m.mat.Store(nil)
 }
 
@@ -223,6 +233,8 @@ func acmeFingerprint(cfg config.CertConfig) string {
 	b.WriteString(strings.TrimSpace(cfg.DNSProvider))
 	b.WriteByte('|')
 	b.WriteString(strconv.Itoa(cfg.HTTPPort))
+	b.WriteByte('|')
+	b.WriteString(strings.TrimSpace(cfg.CertDir))
 	b.WriteByte('|')
 	b.WriteString(strings.TrimSpace(cfg.ACMEStorageDir))
 	b.WriteByte('|')
@@ -281,6 +293,20 @@ func (m *Manager) HasCert() bool {
 	return mat != nil && len(mat.certPEM) > 0 && len(mat.keyPEM) > 0
 }
 func (m *Manager) CertRenewed() bool { return m.renewed.Swap(false) }
+
+// RefreshSharedCertificate is called by the service main loop. A certificate
+// renewed by another node is visible in shared storage even if this manager's
+// own CertMagic cache did not perform the renewal.
+func (m *Manager) RefreshSharedCertificate(ctx context.Context) (bool, error) {
+	if !m.acmeStarted || m.acmeStorage == nil {
+		return false, nil
+	}
+	old := m.TLSCert()
+	if err := m.loadPEMFromStorage(ctx, m.acmeStorage, m.acmeIssuerKey, m.acmeDomain); err != nil {
+		return false, err
+	}
+	return !pemEqual(old, m.TLSCert()), nil
+}
 
 // TLSCert returns the current PEM material as a kernel.TLSCert.
 func (m *Manager) TLSCert() kernel.TLSCert {
@@ -482,7 +508,7 @@ func copyMissingTree(srcDir, dstDir string) error {
 	}
 	for _, entry := range entries {
 		name := entry.Name()
-		if name == ".acme.lock" || strings.HasSuffix(name, ".tmp") {
+		if name == ".acme.lock" || name == "locks" || name == "cert.pem" || name == "key.pem" || strings.HasPrefix(name, ".acme-retry-") || strings.HasSuffix(name, ".tmp") {
 			continue
 		}
 		srcPath := filepath.Join(srcDir, name)
@@ -724,12 +750,9 @@ func (m *Manager) startACME(ctx context.Context, dnsSolver *certmagic.DNS01Solve
 			if issuerKey == "" {
 				return nil
 			}
-			if err := m.loadPEMFromStorage(evtCtx, storage, issuerKey, domain); err != nil {
-				nlog.Core().Error("failed to reload cert after renewal", "error", err)
-				return nil
-			}
+			// The service main loop reads the updated shared pair. Do not
+			// access mutable Manager configuration from this callback.
 			m.renewed.Store(true)
-			nlog.Core().Info("TLS certificate reloaded after renewal", "domain", domain)
 			return nil
 		},
 	})
@@ -787,6 +810,9 @@ func (m *Manager) startACME(ctx context.Context, dnsSolver *certmagic.DNS01Solve
 	}
 
 	m.cache = cache
+	m.acmeStorage = storage
+	m.acmeIssuerKey = issuerKey
+	m.acmeDomain = domain
 	m.acmeCancel = acmeCancel
 	m.acmeFingerprint = acmeFingerprint(m.cfg)
 	m.acmeStarted = true
@@ -874,6 +900,9 @@ func (m *Manager) loadPEMFromStorage(ctx context.Context, storage certmagic.Stor
 	if err := validateCertificatePair(certPEM, keyPEM, domain); err != nil {
 		return fmt.Errorf("invalid cert/key pair on disk: %w", err)
 	}
-	m.storePEM(certPEM, keyPEM)
+	current := m.TLSCert()
+	if string(current.CertPEM) != string(certPEM) || string(current.KeyPEM) != string(keyPEM) {
+		m.storePEM(certPEM, keyPEM)
+	}
 	return nil
 }
