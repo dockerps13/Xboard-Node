@@ -1,6 +1,7 @@
 package cert
 
 import (
+	"fmt"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -583,5 +584,53 @@ func TestACMESharedStorageFailureFailsClosed(t *testing.T) {
 	}
 	if manager.HasCert() || manager.magic != nil || manager.acmeStarted {
 		t.Fatal("failed ACME startup left certificate state active")
+	}
+}
+
+func TestACMERetryDelayProblemDetail(t *testing.T) {
+	until := time.Now().UTC().Add(8 * time.Hour).Truncate(time.Second)
+	err := fmt.Errorf("HTTP 429 urn:ietf:params:acme:error:rateLimited - too many certificates, retry after %s UTC", until.Format("2006-01-02 15:04:05"))
+	delay, limited := acmeRetryDelay(err, 0)
+	if !limited || delay < 7*time.Hour || delay > 8*time.Hour {
+		t.Fatalf("problem detail not honored: %s, %v", delay, limited)
+	}
+	if delay, limited := acmeRetryDelay(fmt.Errorf("HTTP 429 rateLimited"), 0); !limited || delay < time.Hour {
+		t.Fatalf("unsafe fallback: %s, %v", delay, limited)
+	}
+}
+
+func TestACMECooldownSurvivesManagersAndIsolatesDomains(t *testing.T) {
+	dir := t.TempDir()
+	calls := 0
+	limited := func() error {
+		calls++
+		return fmt.Errorf("HTTP 429 rateLimited, retry after %s UTC", time.Now().UTC().Add(time.Hour).Format("2006-01-02 15:04:05"))
+	}
+	if err := obtainACMEWithCooldown(dir, "shared.example.test", limited); err == nil {
+		t.Fatal("expected rate limit")
+	}
+	for i := 0; i < 5; i++ {
+		if err := obtainACMEWithCooldown(dir, "SHARED.example.test.", limited); err == nil {
+			t.Fatal("expected persistent cooldown")
+		}
+	}
+	if calls != 1 {
+		t.Fatalf("issuer called %d times, want one", calls)
+	}
+	if err := obtainACMEWithCooldown(dir, "other.example.test", func() error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	path := acmeCooldownPath(dir, "shared.example.test")
+	if err := atomicWriteFile(path, []byte(time.Now().Add(-time.Minute).Format(time.RFC3339Nano)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := obtainACMEWithCooldown(dir, "shared.example.test", func() error { calls++; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 2 {
+		t.Fatalf("issuer calls after expiry = %d", calls)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("cooldown marker not cleared: %v", err)
 	}
 }

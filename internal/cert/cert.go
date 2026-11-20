@@ -19,6 +19,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -61,6 +62,7 @@ type Manager struct {
 	mat atomic.Pointer[certMaterial]
 
 	magic           *certmagic.Config
+	cache           *certmagic.Cache
 	renewed         atomic.Bool
 	acmeStarted     bool
 	acmeFingerprint string
@@ -192,6 +194,10 @@ func (m *Manager) tearDownACME() {
 	if m.acmeCancel != nil {
 		m.acmeCancel()
 		m.acmeCancel = nil
+	}
+	if m.cache != nil {
+		m.cache.Stop()
+		m.cache = nil
 	}
 	m.magic = nil
 	m.acmeStarted = false
@@ -586,58 +592,83 @@ func acquireACMELock(ctx context.Context, storageDir string) (func(), error) {
 	}
 }
 
-func acmeRetryDelay(err error, attempt int) (time.Duration, bool) {
+// Let's Encrypt exposes this timestamp in the ACME problem detail even when
+// the wrapped error does not expose the HTTP response headers.
+var acmeRetryTimePattern = regexp.MustCompile(`(?i)retry after ([0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}) UTC`)
+
+func acmeRetryDelay(err error, _ int) (time.Duration, bool) {
 	var acmeErr *acme.Error
 	isRateLimited := errors.As(err, &acmeErr) && acmeErr.StatusCode == http.StatusTooManyRequests
-	if !isRateLimited && !strings.Contains(strings.ToLower(err.Error()), "429") {
+	detail := strings.ToLower(err.Error())
+	if !isRateLimited && !strings.Contains(detail, "http 429") && !strings.Contains(detail, "ratelimited") {
 		return 0, false
 	}
 
+	now := time.Now()
+	var until time.Time
 	if acmeErr != nil && acmeErr.Header != nil {
 		if value := strings.TrimSpace(acmeErr.Header.Get("Retry-After")); value != "" {
-			if seconds, parseErr := strconv.Atoi(value); parseErr == nil && seconds >= 0 {
-				return time.Duration(seconds) * time.Second, true
-			}
-			if when, parseErr := http.ParseTime(value); parseErr == nil {
-				if delay := time.Until(when); delay > 0 {
-					return delay, true
-				}
-				return 0, true
+			if seconds, parseErr := strconv.Atoi(value); parseErr == nil && seconds >= 0 && seconds <= 31536000 {
+				until = now.Add(time.Duration(seconds) * time.Second)
+			} else if when, parseErr := http.ParseTime(value); parseErr == nil {
+				until = when
 			}
 		}
 	}
-	if attempt < 0 {
-		attempt = 0
+	if match := acmeRetryTimePattern.FindStringSubmatch(err.Error()); len(match) == 2 {
+		if when, parseErr := time.ParseInLocation("2006-01-02 15:04:05", match[1], time.UTC); parseErr == nil && when.After(until) {
+			until = when
+		}
 	}
-	delay := time.Second << min(attempt, 6)
-	if delay > 5*time.Minute {
-		delay = 5 * time.Minute
+	if until.IsZero() {
+		// Unknown deadline: prefer a conservative pause over hammering the CA.
+		return 24 * time.Hour, true
 	}
-	return delay, true
+	if !until.After(now) {
+		return time.Minute, true
+	}
+	return until.Sub(now), true
+}
+
+// The caller holds the machine storage lock. A per-domain marker survives
+// process restarts and is shared by every node using that storage.
+func acmeCooldownPath(storageDir, domain string) string {
+	normalized := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(domain)), ".")
+	sum := sha256.Sum256([]byte(normalized))
+	return filepath.Join(storageDir, ".acme-retry-"+hex.EncodeToString(sum[:]))
+}
+
+func obtainACMEWithCooldown(storageDir, domain string, obtain func() error) error {
+	path := acmeCooldownPath(storageDir, domain)
+	if data, err := os.ReadFile(path); err == nil {
+		until, parseErr := time.Parse(time.RFC3339Nano, strings.TrimSpace(string(data)))
+		if parseErr != nil {
+			return fmt.Errorf("invalid ACME cooldown marker: %w", parseErr)
+		}
+		if time.Now().Before(until) {
+			return fmt.Errorf("ACME rate limit cooldown for %s until %s", domain, until.UTC().Format(time.RFC3339))
+		}
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("read ACME cooldown: %w", err)
+	}
+	err := obtain()
+	if err == nil {
+		if removeErr := os.Remove(path); removeErr != nil && !os.IsNotExist(removeErr) {
+			return fmt.Errorf("clear ACME cooldown: %w", removeErr)
+		}
+		return nil
+	}
+	if delay, limited := acmeRetryDelay(err, 0); limited {
+		until := time.Now().Add(delay).UTC()
+		if writeErr := atomicWriteFile(path, []byte(until.Format(time.RFC3339Nano)+"\n"), 0o600); writeErr != nil {
+			return fmt.Errorf("persist ACME cooldown: %w (issuer: %v)", writeErr, err)
+		}
+	}
+	return err
 }
 
 func obtainACMECertificate(ctx context.Context, magic *certmagic.Config, domain string) error {
-	const maxAttempts = 4
-	for attempt := 0; attempt < maxAttempts; attempt++ {
-		err := magic.ObtainCertSync(ctx, domain)
-		if err == nil {
-			return nil
-		}
-		delay, retry := acmeRetryDelay(err, attempt)
-		if !retry || attempt == maxAttempts-1 {
-			return err
-		}
-		timer := time.NewTimer(delay)
-		select {
-		case <-ctx.Done():
-			if !timer.Stop() {
-				<-timer.C
-			}
-			return ctx.Err()
-		case <-timer.C:
-		}
-	}
-	return fmt.Errorf("ACME obtain exhausted retries")
+	return magic.ObtainCertSync(ctx, domain)
 }
 
 func (m *Manager) startACME(ctx context.Context, dnsSolver *certmagic.DNS01Solver) error {
@@ -728,25 +759,34 @@ func (m *Manager) startACME(ctx context.Context, dnsSolver *certmagic.DNS01Solve
 	}
 	m.magic = magic
 
-	if err := obtainACMECertificate(acmeCtx, magic, domain); err != nil {
-		acmeCancel()
-		m.magic = nil
-		return fmt.Errorf("obtain certificate: %w", err)
-	}
-
 	issuerKey := magic.Issuers[0].IssuerKey()
+	// Load an already valid domain-specific cached pair before any issuance.
 	if err := m.loadPEMFromStorage(acmeCtx, storage, issuerKey, domain); err != nil {
-		acmeCancel()
-		m.magic = nil
-		return fmt.Errorf("load cert from storage: %w", err)
+		if err := obtainACMEWithCooldown(storageDir, domain, func() error {
+			return obtainACMECertificate(acmeCtx, magic, domain)
+		}); err != nil {
+			acmeCancel()
+			cache.Stop()
+			m.magic = nil
+			return fmt.Errorf("obtain certificate: %w", err)
+		}
+		if err := m.loadPEMFromStorage(acmeCtx, storage, issuerKey, domain); err != nil {
+			acmeCancel()
+			cache.Stop()
+			m.magic = nil
+			return fmt.Errorf("load cert from storage: %w", err)
+		}
 	}
 
 	if err := magic.ManageAsync(acmeCtx, []string{domain}); err != nil {
 		acmeCancel()
+		cache.Stop()
 		m.magic = nil
+		m.mat.Store(nil)
 		return fmt.Errorf("start cert manager: %w", err)
 	}
 
+	m.cache = cache
 	m.acmeCancel = acmeCancel
 	m.acmeFingerprint = acmeFingerprint(m.cfg)
 	m.acmeStarted = true
