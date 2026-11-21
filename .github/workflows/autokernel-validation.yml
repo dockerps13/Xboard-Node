@@ -54,7 +54,7 @@ jobs:
         run: go vet -tags "with_quic with_utls with_wireguard with_clash_api" ./...
       - name: Race-sensitive kernel and control-plane tests
         if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[full-ci]')
-        run: go test -race -tags "with_quic with_utls with_wireguard with_clash_api" ./internal/model ./internal/machine ./internal/controlplane ./internal/limiter ./internal/tracker ./internal/reportjournal ./internal/service ./internal/panel ./internal/kernel/singbox ./internal/kernel/xray ./internal/kernel/obfs ./internal/monitor
+        run: go test -race -tags "with_quic with_utls with_wireguard with_clash_api" ./internal/cert ./internal/model ./internal/machine ./internal/controlplane ./internal/limiter ./internal/tracker ./internal/reportjournal ./internal/service ./internal/panel ./internal/kernel/singbox ./internal/kernel/xray ./internal/kernel/obfs ./internal/monitor
       - name: AnyTLS fork race and security regression tests
         if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[full-ci]')
         working-directory: third_party/sing-anytls
