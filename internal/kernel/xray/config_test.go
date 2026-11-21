@@ -591,14 +591,14 @@ func TestTCPHeaderAndSocksTLSConfig(t *testing.T) {
 // inbound with supplied certificate material, not only a capability label.
 func TestBuildConfig_SocksTLSCertificate(t *testing.T) {
 	node := &model.NodeSpec{
-		Protocol: "socks",
+		Protocol:   "socks",
 		ServerPort: 7334,
-		TLS: 1,
+		TLS:        1,
 		ServerName: "example.com",
 	}
 	cfg := buildConfig(testKernelCfg, node, testUsers, kernel.TLSCert{
 		CertPEM: []byte("TEST_CERT"),
-		KeyPEM: []byte("TEST_KEY"),
+		KeyPEM:  []byte("TEST_KEY"),
 	})
 	inbounds, ok := cfg["inbounds"].([]M)
 	if !ok || len(inbounds) != 1 {
