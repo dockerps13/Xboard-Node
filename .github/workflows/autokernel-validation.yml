@@ -50,6 +50,8 @@ jobs:
         run: go test ./internal/model -run TestResolveKernelForNode -count=1
       - name: Complete test suite
         run: go test -tags "with_quic with_utls with_wireguard with_clash_api" ./...
+      - name: Limit and traffic acceptance suite (offline)
+        run: bash tests/limits-acceptance.sh
       - name: Static analysis
         run: go vet -tags "with_quic with_utls with_wireguard with_clash_api" ./...
       - name: Race-sensitive kernel and control-plane tests
