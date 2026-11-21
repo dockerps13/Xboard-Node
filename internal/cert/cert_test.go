@@ -770,11 +770,11 @@ func TestExpiredTLSMaterialNotExposed(t *testing.T) {
 	now := time.Now()
 	template := &x509.Certificate{
 		SerialNumber: big.NewInt(42),
-		DNSNames: []string{domain},
-		NotBefore: now.Add(-48 * time.Hour),
-		NotAfter: now.Add(-24 * time.Hour),
-		KeyUsage: x509.KeyUsageDigitalSignature,
-		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		DNSNames:     []string{domain},
+		NotBefore:    now.Add(-48 * time.Hour),
+		NotAfter:     now.Add(-24 * time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 	}
 	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
 	if err != nil {
@@ -783,8 +783,8 @@ func TestExpiredTLSMaterialNotExposed(t *testing.T) {
 	manager := NewManager(config.CertConfig{Domain: domain})
 	manager.mat.Store(&certMaterial{
 		certPEM: pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}),
-		keyPEM: keyPEM,
-		domain: domain,
+		keyPEM:  keyPEM,
+		domain:  domain,
 	})
 	if manager.HasCert() || manager.TLSCert().HasCert() {
 		t.Fatal("expired certificate must not be served")
