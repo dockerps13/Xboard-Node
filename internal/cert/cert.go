@@ -76,6 +76,7 @@ type Manager struct {
 type certMaterial struct {
 	certPEM []byte
 	keyPEM  []byte
+	domain  string // immutable issuance scope, safe for concurrent health readers
 }
 
 // NewManager creates a certificate manager.
@@ -86,7 +87,7 @@ func NewManager(cfg config.CertConfig) *Manager {
 // storePEM atomically swaps the in-memory cert material and persists to disk
 // so that restarts can reload without re-generating or re-requesting.
 func (m *Manager) storePEM(cert, key []byte) {
-	m.mat.Store(&certMaterial{certPEM: cert, keyPEM: key})
+	m.mat.Store(&certMaterial{certPEM: cert, keyPEM: key, domain: m.cfg.Domain})
 	m.persistPEM(cert, key)
 }
 
@@ -158,7 +159,7 @@ func (m *Manager) loadPersistedPEM() bool {
 		return false
 	}
 	// Store in memory only (don't re-persist what we just read).
-	m.mat.Store(&certMaterial{certPEM: certPEM, keyPEM: keyPEM})
+	m.mat.Store(&certMaterial{certPEM: certPEM, keyPEM: keyPEM, domain: m.cfg.Domain})
 	nlog.Core().Info("cert: loaded persisted certificate from disk", "dir", dir)
 	return true
 }
@@ -315,7 +316,7 @@ func (m *Manager) TLSCert() kernel.TLSCert {
 	}
 	// Expired or mis-scoped material must never be handed to a TLS listener,
 	// even if its original in-memory snapshot was valid at startup.
-	if err := validateCertificatePair(mat.certPEM, mat.keyPEM, m.cfg.Domain); err != nil {
+	if err := validateCertificatePair(mat.certPEM, mat.keyPEM, mat.domain); err != nil {
 		return kernel.TLSCert{}
 	}
 	return kernel.TLSCert{CertPEM: mat.certPEM, KeyPEM: mat.keyPEM}

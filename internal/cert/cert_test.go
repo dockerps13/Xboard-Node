@@ -741,17 +741,52 @@ func TestBackgroundACMERenewalCooldown(t *testing.T) {
 func TestExpiredAndWrongDomainTLSMaterialFailsClosed(t *testing.T) {
 	valid, key := generateSelfSignedPair(t, "valid.example.test")
 	manager := NewManager(config.CertConfig{Domain: "valid.example.test"})
-	manager.mat.Store(&certMaterial{certPEM: valid, keyPEM: key})
+	manager.mat.Store(&certMaterial{certPEM: valid, keyPEM: key, domain: "valid.example.test"})
 	if !manager.HasCert() {
 		t.Fatal("valid pair must be available")
 	}
-	manager.cfg.Domain = "other.example.test"
+	manager.mat.Store(&certMaterial{certPEM: valid, keyPEM: key, domain: "other.example.test"})
 	if manager.HasCert() || manager.TLSCert().HasCert() {
 		t.Fatal("wrong-domain cert still exposed")
 	}
-	manager.cfg.Domain = "valid.example.test"
-	manager.mat.Store(&certMaterial{certPEM: []byte("expired or invalid"), keyPEM: key})
+	manager.mat.Store(&certMaterial{certPEM: []byte("expired or invalid"), keyPEM: key, domain: "valid.example.test"})
 	if manager.HasCert() || manager.TLSCert().HasCert() {
 		t.Fatal("invalid cert still exposed")
+	}
+}
+
+func TestExpiredTLSMaterialNotExposed(t *testing.T) {
+	domain := "expired.example.test"
+	original, keyPEM := generateSelfSignedPair(t, domain)
+	_ = original
+	block, _ := pem.Decode(keyPEM)
+	if block == nil {
+		t.Fatal("missing PEM key")
+	}
+	key, err := x509.ParseECPrivateKey(block.Bytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	template := &x509.Certificate{
+		SerialNumber: big.NewInt(42),
+		DNSNames: []string{domain},
+		NotBefore: now.Add(-48 * time.Hour),
+		NotAfter: now.Add(-24 * time.Hour),
+		KeyUsage: x509.KeyUsageDigitalSignature,
+		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := NewManager(config.CertConfig{Domain: domain})
+	manager.mat.Store(&certMaterial{
+		certPEM: pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}),
+		keyPEM: keyPEM,
+		domain: domain,
+	})
+	if manager.HasCert() || manager.TLSCert().HasCert() {
+		t.Fatal("expired certificate must not be served")
 	}
 }
