@@ -481,6 +481,12 @@ func (s *Service) handleCertificateState(ctx context.Context) {
 		nlog.Core().Debug("shared certificate refresh failed", "error", err)
 	}
 	renewed = renewed || sharedChanged
+	// Certificate validity can change while the process runs. A certificate
+	// that expired or became invalid must fail closed, not leave an existing
+	// TLS listener running until another panel config update arrives.
+	if s.lastConfig != nil && requiresCertificate(s.lastConfig) && !s.cert.HasCert() {
+		s.stopForTLS(ctx)
+	}
 	recovered := false
 	if s.certApplyFailed || (s.lastConfig != nil && requiresCertificate(s.lastConfig) && !s.cert.HasCert()) {
 		if err := s.cert.Start(ctx); err != nil {

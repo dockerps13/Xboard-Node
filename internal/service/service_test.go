@@ -363,3 +363,30 @@ func TestCertificateRecoveryKeepsTLSListenerStoppedOnFailure(t *testing.T) {
 		t.Fatal("TLS listener started without recovered certificate")
 	}
 }
+
+func TestExpiredCertificateStopsAlreadyRunningTLSListener(t *testing.T) {
+	k := &fakeKernel{running: true}
+	s := newTestService(k)
+	s.lastConfig = &model.NodeSpec{Protocol: "trojan", TLS: 1, ServerPort: 1443}
+	s.lastUsers = []model.UserSpec{{ID: 1, UUID: "tls-user"}}
+	// No valid certificate is present, as would happen when a previously
+	// loaded in-memory cert reaches its NotAfter time.
+	s.handleCertificateState(context.Background())
+	if k.running {
+		t.Fatal("expired TLS listener remains running")
+	}
+	if k.startCalls != 0 {
+		t.Fatal("TLS listener restarted without a valid certificate")
+	}
+}
+
+func TestCertificateLossDoesNotStopPlainListener(t *testing.T) {
+	k := &fakeKernel{running: true}
+	s := newTestService(k)
+	s.lastConfig = &model.NodeSpec{Protocol: "vless", TLS: 2, ServerPort: 443}
+	s.lastUsers = []model.UserSpec{{ID: 1, UUID: "reality-user"}}
+	s.handleCertificateState(context.Background())
+	if !k.running {
+		t.Fatal("Reality listener stopped despite not needing PEM material")
+	}
+}
