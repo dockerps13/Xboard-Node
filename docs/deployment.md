@@ -1,5 +1,32 @@
 # Linux deployment and operations
 
+## V1.0.2 candidate deployment (not a production release)
+
+V1.0.2 is an **unreleased candidate**. Do not use the `v1.0.2` tag,
+`latest`, or a moving branch to install until the final gate is signed off
+and published. See [V1.0.2 acceptance](release-v1.0.2-acceptance.md).
+
+The opt-in `kernel.tcp_probe: true` setting adds a bare TCP listener at a
+Hysteria2/TUIC node's UDP port for Shadowrocket-style direct TCP latency
+checks. It reports TCP reachability, **not** QUIC RTT. Before testing the
+built-in implementation, stop temporary `socat` listeners on those TCP
+ports; otherwise the new listener will report a bind collision and skip
+that endpoint. Keep the UDP service unaffected and test one node at a
+time. Do not enable this on unrelated protocols. The option defaults to
+off. Update the AWS security group as needed for the desired TCP tests,
+and avoid exposing unnecessary listeners.
+
+Candidate testing must preserve a verified copy of the prior executable,
+`xbctl`, configuration, credentials, and systemd unit. Verify all hashes
+and the exact `SOURCE_COMMIT`; never use a `latest` URL for staging
+upgrades. Stage, observe, and rehearse rollback first. Real panel billing,
+cross-node limits, node disable/re-enable, reporting and disconnect tests
+are mandatory for a commercial release.
+
+## Historical v1.0.1 deployment guidance
+
+The following v1.0.1 instructions are retained as historical candidate guidance, **not** as the v1.0.2 release procedure.
+
 ## Release status and scope
 
 V1.0.1 is pending final approval and has no published stable assets yet. V1.0.0 remains the production baseline. Linux amd64 and arm64 release builds, `SOURCE_COMMIT`, `CHANGELOG`, and `SHA256SUMS` must all come from the same approved V1.0.1 tag. Do not use a moving branch or `latest` for the production upgrade.

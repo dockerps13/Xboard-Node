@@ -1,5 +1,25 @@
 # Changelog
 
+## V1.0.2 (release candidate — NOT STABLE)
+
+This version remains under final release acceptance. No stable tag or release
+may be published until the release gates in
+[docs/release-v1.0.2-acceptance.md](docs/release-v1.0.2-acceptance.md) pass for
+one pinned commit.
+
+- Add opt-in `kernel.tcp_probe: true` for Hysteria2/TUIC UDP nodes. It
+  offers a bare TCP handshake on the corresponding port to support clients
+  using direct TCP port checks. It is off by default, is not QUIC RTT, and
+  does not change UDP proxy handling.
+- Add lifecycle and port conflict regression tests for the TCP listener.
+- Preserve the existing protocol, limiter, traffic journal, installer and
+  kernel regression suites from the development baseline.
+
+Pending release blockers: on-host acceptance of the built-in TCP probe after
+removing the temporary `socat` listeners; real panel billing and offline
+device/online count recovery; explicit scope decision about strict
+cross-node admission; upgrade/rollback and representative soak evidence.
+
 ## V1.0.1 (pending release)
 
 This entry describes the source currently under final validation. It is not a
