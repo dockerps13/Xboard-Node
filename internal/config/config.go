@@ -121,7 +121,7 @@ type KernelConfig struct {
 	// TCPProbe enables a bare TCP handshake listener on Hysteria2/TUIC UDP ports.
 	// This is only a compatibility RTT probe, not a QUIC or proxy latency test.
 	// Disabled by default; enable only when clients require TCP port checks.
-	TCPProbe bool `yaml:"tcp_probe"`
+	TCPProbe  bool   `yaml:"tcp_probe"`
 	Type      string `yaml:"type"` // "singbox" or "xray"
 	ConfigDir string `yaml:"config_dir"`
 	LogLevel  string `yaml:"log_level"`
