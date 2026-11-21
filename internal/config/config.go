@@ -118,6 +118,10 @@ type WSConfig struct {
 }
 
 type KernelConfig struct {
+	// TCPProbe enables a bare TCP handshake listener on Hysteria2/TUIC UDP ports.
+	// This is only a compatibility RTT probe, not a QUIC or proxy latency test.
+	// Disabled by default; enable only when clients require TCP port checks.
+	TCPProbe bool `yaml:"tcp_probe"`
 	Type      string `yaml:"type"` // "singbox" or "xray"
 	ConfigDir string `yaml:"config_dir"`
 	LogLevel  string `yaml:"log_level"`
@@ -501,6 +505,11 @@ func (c *Config) inheritFrom(parent *Config) {
 	}
 	if c.Kernel.LogLevel == "" {
 		c.Kernel.LogLevel = parent.Kernel.LogLevel
+	}
+	// A true top-level TCP probe setting is inherited by instances.
+	// Per-instance false cannot override true with a plain YAML bool.
+	if parent.Kernel.TCPProbe {
+		c.Kernel.TCPProbe = true
 	}
 	if c.Kernel.GeoDataDir == "" {
 		c.Kernel.GeoDataDir = parent.Kernel.GeoDataDir

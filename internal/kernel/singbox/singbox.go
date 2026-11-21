@@ -25,6 +25,7 @@ import (
 	"github.com/cedar2025/xboard-node/internal/kernel/obfs"
 	"github.com/cedar2025/xboard-node/internal/model"
 	"github.com/cedar2025/xboard-node/internal/nlog"
+	"github.com/cedar2025/xboard-node/internal/tcpprobe"
 )
 
 // drainTimeout is how long stop() waits for in-flight connections to finish
@@ -58,6 +59,7 @@ type SingBox struct {
 	archivedTraffic map[int][2]int64
 	obfsHTTP        *obfs.HTTPServer
 	obfsPublicPort  int
+	tcpProbe        *tcpprobe.Listener
 
 	// speedLimitFunc resolves a user UUID to a *rate.Limiter.
 	// Set once by SetSpeedLimitFunc and forwarded to every new ConnTracker.
@@ -186,6 +188,7 @@ func (s *SingBox) Start(nodeConfig *model.NodeSpec, users []model.UserSpec, tls 
 	s.nodeConfig = nodeConfig
 	s.tls = tls
 	s.obfsHTTP = front
+	s.syncTCPProbe(nodeConfig)
 	if front != nil {
 		s.obfsPublicPort = nodeConfig.ServerPort
 	} else {
@@ -434,6 +437,7 @@ func (s *SingBox) Reload(nodeConfig *model.NodeSpec, users []model.UserSpec, tls
 	s.users = users
 	s.nodeConfig = nodeConfig
 	s.tls = tls
+	s.syncTCPProbe(nodeConfig)
 	return nil
 }
 
@@ -454,9 +458,46 @@ func (s *SingBox) registerTracker(ctx context.Context) {
 	s.trackerRegistered = true
 }
 
+// syncTCPProbe is called with s.mu held and only after a successful inbound
+// start/reload. Binding failure never prevents the UDP proxy from starting.
+// A former listener stays active across a same-address kernel replacement.
+func (s *SingBox) syncTCPProbe(node *model.NodeSpec) {
+	var addr string
+	if s.cfg.TCPProbe && node != nil && node.ServerPort > 0 && node.ServerPort <= 65535 {
+		if node.Protocol == "tuic" || node.Protocol == "hysteria2" || (node.Protocol == "hysteria" && node.Version == 2) {
+			host := node.ListenIP
+			if host == "" {
+				host = "0.0.0.0"
+			}
+			addr = net.JoinHostPort(host, strconv.Itoa(node.ServerPort))
+		}
+	}
+	if s.tcpProbe != nil && s.tcpProbe.Addr() == addr {
+		return
+	}
+	if s.tcpProbe != nil {
+		_ = s.tcpProbe.Close()
+		s.tcpProbe = nil
+	}
+	if addr == "" {
+		return
+	}
+	probe, err := tcpprobe.Listen(addr)
+	if err != nil {
+		nlog.Core().Warn("TCP latency probe unavailable; UDP inbound remains active", "address", addr, "error", err)
+		return
+	}
+	s.tcpProbe = probe
+	nlog.Core().Info("TCP latency probe listening (handshake only; not QUIC RTT)", "address", addr)
+}
+
 func (s *SingBox) Stop() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.tcpProbe != nil {
+		_ = s.tcpProbe.Close()
+		s.tcpProbe = nil
+	}
 	if s.obfsHTTP != nil {
 		s.obfsHTTP.StopAccepting()
 	}
