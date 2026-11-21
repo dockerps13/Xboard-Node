@@ -289,8 +289,7 @@ func (m *Manager) resolveMode() string {
 }
 
 func (m *Manager) HasCert() bool {
-	mat := m.mat.Load()
-	return mat != nil && len(mat.certPEM) > 0 && len(mat.keyPEM) > 0
+	return m.TLSCert().HasCert()
 }
 func (m *Manager) CertRenewed() bool { return m.renewed.Swap(false) }
 
@@ -312,6 +311,11 @@ func (m *Manager) RefreshSharedCertificate(ctx context.Context) (bool, error) {
 func (m *Manager) TLSCert() kernel.TLSCert {
 	mat := m.mat.Load()
 	if mat == nil {
+		return kernel.TLSCert{}
+	}
+	// Expired or mis-scoped material must never be handed to a TLS listener,
+	// even if its original in-memory snapshot was valid at startup.
+	if err := validateCertificatePair(mat.certPEM, mat.keyPEM, m.cfg.Domain); err != nil {
 		return kernel.TLSCert{}
 	}
 	return kernel.TLSCert{CertPEM: mat.certPEM, KeyPEM: mat.keyPEM}
@@ -693,6 +697,52 @@ func obtainACMEWithCooldown(storageDir, domain string, obtain func() error) erro
 	return err
 }
 
+// acmeRateLimitEventGuard applies to both initial issuance and background
+// renewal. CertMagic invokes cert_obtaining before calling the issuer and
+// cert_failed after a failed issuer attempt. The shared marker ensures a
+// throttled renewal never creates another production ACME order.
+func acmeRateLimitEventGuard(storageDir, event string, data map[string]any) error {
+	domain, _ := data["identifier"].(string)
+	if domain == "" {
+		return nil
+	}
+	path := acmeCooldownPath(storageDir, domain)
+	switch event {
+	case "cert_obtaining":
+		bytes, err := os.ReadFile(path)
+		if os.IsNotExist(err) {
+			return nil
+		}
+		if err != nil {
+			return certmagic.ErrNoRetry{Err: fmt.Errorf("read ACME cooldown: %w", err)}
+		}
+		until, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(string(bytes)))
+		if err != nil {
+			return certmagic.ErrNoRetry{Err: fmt.Errorf("invalid ACME cooldown marker: %w", err)}
+		}
+		if time.Now().Before(until) {
+			return certmagic.ErrNoRetry{Err: fmt.Errorf("ACME cooldown for %s until %s", domain, until.UTC().Format(time.RFC3339))}
+		}
+	case "cert_failed":
+		failed, _ := data["error"].(error)
+		if failed == nil {
+			return nil
+		}
+		if delay, limited := acmeRetryDelay(failed, 0); limited {
+			newUntil := time.Now().Add(delay).UTC()
+			if old, err := os.ReadFile(path); err == nil {
+				if oldUntil, parseErr := time.Parse(time.RFC3339Nano, strings.TrimSpace(string(old))); parseErr == nil && oldUntil.After(newUntil) {
+					newUntil = oldUntil
+				}
+			}
+			if err := atomicWriteFile(path, []byte(newUntil.Format(time.RFC3339Nano)+"\n"), 0o600); err != nil {
+				return fmt.Errorf("persist renewal ACME cooldown: %w", err)
+			}
+		}
+	}
+	return nil
+}
+
 func obtainACMECertificate(ctx context.Context, magic *certmagic.Config, domain string) error {
 	return magic.ObtainCertSync(ctx, domain)
 }
@@ -739,6 +789,9 @@ func (m *Manager) startACME(ctx context.Context, dnsSolver *certmagic.DNS01Solve
 	magic = certmagic.New(cache, certmagic.Config{
 		Storage: storage,
 		OnEvent: func(evtCtx context.Context, event string, data map[string]any) error {
+			if err := acmeRateLimitEventGuard(storageDir, event, data); err != nil {
+				return err
+			}
 			// Only react to renewals; initial load happens explicitly after ObtainCertSync.
 			if event != "cert_obtained" {
 				return nil

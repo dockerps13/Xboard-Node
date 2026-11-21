@@ -8,6 +8,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"math/big"
 	"net/http"
@@ -698,5 +699,59 @@ func TestMigrationDoesNotCopyFlatPEMOrLocks(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(shared, name)); !os.IsNotExist(err) {
 			t.Fatalf("unexpected shared entry %s: %v", name, err)
 		}
+	}
+}
+
+func TestBackgroundACMERenewalCooldown(t *testing.T) {
+	dir := t.TempDir()
+	domain := "renewal.example.test"
+	requests := 0
+	if err := acmeRateLimitEventGuard(dir, "cert_obtaining", map[string]any{"identifier": domain}); err != nil {
+		t.Fatal(err)
+	}
+	requests++
+	limit := fmt.Errorf("HTTP 429 urn:ietf:params:acme:error:rateLimited - retry after %s UTC", time.Now().UTC().Add(time.Hour).Format("2006-01-02 15:04:05"))
+	if err := acmeRateLimitEventGuard(dir, "cert_failed", map[string]any{"identifier": domain, "renewal": true, "error": limit}); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 10; i++ {
+		err := acmeRateLimitEventGuard(dir, "cert_obtaining", map[string]any{"identifier": domain})
+		if err == nil {
+			requests++
+		}
+		var noRetry certmagic.ErrNoRetry
+		if !errors.As(err, &noRetry) {
+			t.Fatalf("renewal cooldown did not suppress retries: %v", err)
+		}
+	}
+	if requests != 1 {
+		t.Fatalf("unexpected ACME requests: %d", requests)
+	}
+	if err := acmeRateLimitEventGuard(dir, "cert_obtaining", map[string]any{"identifier": "unrelated.example.test"}); err != nil {
+		t.Fatalf("other domain blocked: %v", err)
+	}
+	if err := acmeRateLimitEventGuard(dir, "cert_failed", map[string]any{"identifier": domain, "error": fmt.Errorf("unrelated failure")}); err != nil {
+		t.Fatal(err)
+	}
+	if err := acmeRateLimitEventGuard(dir, "cert_obtaining", map[string]any{"identifier": domain}); err == nil {
+		t.Fatal("non-rate-limit error must not clear active cooldown")
+	}
+}
+
+func TestExpiredAndWrongDomainTLSMaterialFailsClosed(t *testing.T) {
+	valid, key := generateSelfSignedPair(t, "valid.example.test")
+	manager := NewManager(config.CertConfig{Domain: "valid.example.test"})
+	manager.mat.Store(&certMaterial{certPEM: valid, keyPEM: key})
+	if !manager.HasCert() {
+		t.Fatal("valid pair must be available")
+	}
+	manager.cfg.Domain = "other.example.test"
+	if manager.HasCert() || manager.TLSCert().HasCert() {
+		t.Fatal("wrong-domain cert still exposed")
+	}
+	manager.cfg.Domain = "valid.example.test"
+	manager.mat.Store(&certMaterial{certPEM: []byte("expired or invalid"), keyPEM: key})
+	if manager.HasCert() || manager.TLSCert().HasCert() {
+		t.Fatal("invalid cert still exposed")
 	}
 }

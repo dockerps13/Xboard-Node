@@ -1457,6 +1457,14 @@ func (s *Service) buildMetrics(status monitor.Status) map[string]interface{} {
 	m["active_users"] = len(online)
 	m["total_users"] = len(lastUsers)
 
+	// These values describe this individual node, not just its host process.
+	// A healthy machine-level /healthz does not imply all TLS listeners are up.
+	m["runtime_health"] = map[string]interface{}{
+		"listener_running":    s.kernel.IsRunning(),
+		"certificate_present": s.cert != nil && s.cert.HasCert(),
+		"applied_node":        s.appliedConfig() != nil,
+	}
+
 	// Speed
 	m["inbound_speed"] = s.tracker.InboundSpeed()
 	m["outbound_speed"] = s.tracker.OutboundSpeed()
