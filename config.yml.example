@@ -10,6 +10,7 @@
 # ── Multiple instances ──
 # kernel:
 #   type: "singbox"
+#   tcp_probe: false  # Optional TCP handshake RTT for Hysteria2/TUIC UDP ports; not QUIC latency
 # log:
 #   level: "info"
 # instances:
