@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -788,5 +789,64 @@ func TestExpiredTLSMaterialNotExposed(t *testing.T) {
 	})
 	if manager.HasCert() || manager.TLSCert().HasCert() {
 		t.Fatal("expired certificate must not be served")
+	}
+}
+
+func TestACMERenewalRateLimitCannotShortenSharedDeadline(t *testing.T) {
+	dir := t.TempDir()
+	domain := "do-not-shorten.example.test"
+	now := time.Now().UTC()
+	long := fmt.Errorf("HTTP 429 rateLimited retry after %s UTC", now.Add(12*time.Hour).Format("2006-01-02 15:04:05"))
+	short := fmt.Errorf("HTTP 429 rateLimited retry after %s UTC", now.Add(time.Hour).Format("2006-01-02 15:04:05"))
+	for _, err := range []error{long, short} {
+		if hookErr := acmeRateLimitEventGuard(dir, "cert_failed", map[string]any{"identifier": domain, "renewal": true, "error": err}); hookErr != nil {
+			t.Fatal(hookErr)
+		}
+	}
+	data, err := os.ReadFile(acmeCooldownPath(dir, domain))
+	if err != nil {
+		t.Fatal(err)
+	}
+	until, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(string(data)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if until.Before(now.Add(11 * time.Hour)) {
+		t.Fatalf("later 429 shortened active deadline: %s", until)
+	}
+	// Simulates a new manager after process restart.
+	if err := acmeRateLimitEventGuard(dir, "cert_obtaining", map[string]any{"identifier": domain}); err == nil {
+		t.Fatal("restarted manager bypassed the shared deadline")
+	}
+}
+
+func TestACMERenewalCooldownMalformedFileFailsClosed(t *testing.T) {
+	dir := t.TempDir()
+	domain := "damaged-cooldown.example.test"
+	if err := atomicWriteFile(acmeCooldownPath(dir, domain), []byte("not-a-time"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	err := acmeRateLimitEventGuard(dir, "cert_obtaining", map[string]any{"identifier": domain})
+	var noRetry certmagic.ErrNoRetry
+	if !errors.As(err, &noRetry) {
+		t.Fatalf("invalid cooldown did not fail closed: %v", err)
+	}
+	calls := 0
+	if err := obtainACMEWithCooldown(dir, domain, func() error { calls++; return nil }); err == nil {
+		t.Fatal("invalid cooldown unexpectedly allowed direct obtain")
+	}
+	if calls != 0 {
+		t.Fatalf("issuer called despite damaged cooldown: %d", calls)
+	}
+}
+
+func TestACMERenewalCooldownExpiredAllowsRetry(t *testing.T) {
+	dir := t.TempDir()
+	domain := "expired-cooldown.example.test"
+	if err := atomicWriteFile(acmeCooldownPath(dir, domain), []byte(time.Now().Add(-time.Minute).UTC().Format(time.RFC3339Nano)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := acmeRateLimitEventGuard(dir, "cert_obtaining", map[string]any{"identifier": domain}); err != nil {
+		t.Fatalf("expired cooldown still blocks renewal: %v", err)
 	}
 }
