@@ -38,7 +38,26 @@ run_suite() {
 run_suite "User speed limiter and limit configuration" ./internal/limiter
 run_suite "Sing-box TCP/UDP speed and device limits" ./internal/kernel/singbox -run 'Test(LimitedTCPWriteAcrossBursts|SharedLimiterAcrossTCPConnections|UDPUnwrapAccountingDirections|UDPPacketBudgetLargerThanBurst|UDPPacketBudgetCancellation|UDPPacketBudgetInvalidBurst|LimitedUDPDoesNotAdvertiseReplaceableIO|GlobalDeviceAliasesCountOnce|GlobalDeviceAliasesDoNotConsumeExtraSlots|RemovedUserGlobalDevicesAreDiscarded|TrafficAccountingSurvivesRetiredTrackerArchive)'
 run_suite "Xray device admission, concurrency and traffic tracking" ./internal/kernel/xray -run 'Test(LimitDispatcher_|DispatcherConcurrentAdmission|DispatcherGlobalDeviceUnion|XrayGetUserTrafficUsesBuiltInStatsAndDispatcherState|XrayUpdateBandwidthLimits)'
-run_suite "Device state and traffic report reliability" ./internal/tracker ./internal/reportjournal ./internal/service ./internal/panel -run 'Test(DeviceRecoveryAfterRestart|IdempotentReportRetriesSameDiskBatchIDAfterRestart|IdempotentStorageFailureRestoresCountersWithoutSending|JournalDeviceSnapshotHasIndependentReport|DeviceReportCounts|LegacyReportQuarantinesAmbiguousFailureWithoutReplay|LegacyReportStorageFailurePreventsSend|JournalRetryPreservesBatchIdentityAcrossRestart|JournalBacklogDrainsAtBoundedRate|ReportBatchIDIsOptInAndRawBytesUnchanged|IdempotentReportDoesNotAcceptLegacyOrMismatchedReceipt)'
+# Run complete tracker and report-journal package suites, not the narrower
+# service test-name selection. The prior filter silently ran zero tests here.
+run_suite "Online devices, IPv4/IPv6 normalization, traffic deltas and offline recovery" ./internal/tracker
+run_suite "Traffic journal, persistence and crash recovery" ./internal/reportjournal
+run_suite "Panel device reports and idempotent traffic delivery" ./internal/service ./internal/panel -run '^Test(DeviceRecoveryAfterRestart|IdempotentReportRetriesSameDiskBatchIDAfterRestart|IdempotentStorageFailureRestoresCountersWithoutSending|JournalDeviceSnapshotHasIndependentReport|DeviceReportCounts|LegacyReportQuarantinesAmbiguousFailureWithoutReplay|LegacyReportStorageFailurePreventsSend|JournalRetryPreservesBatchIdentityAcrossRestart|JournalBacklogDrainsAtBoundedRate|ReportBatchIDIsOptInAndRawBytesUnchanged|IdempotentReportDoesNotAcceptLegacyOrMismatchedReceipt)
+echo "===== Summary =====" | tee -a "$LOG"
+grep -E '^(PASS|FAIL): ' "$LOG" | tail -n 7
+echo "Report: $LOG"
+echo "NOTE: This suite uses isolated fixtures only. It does NOT prove production panel quota exhaustion, multi-device public-IP behavior, or measured live throughput." | tee -a "$LOG"
+exit "$failed"
+
+# Real encrypted client traffic through a loopback echo service, without
+# production panel connections, validates sing-box protocol byte accounting.
+run_suite "Encrypted loopback client traffic and per-user accounting" ./internal/kernel/singbox -run '^TestProtocolClientRoundTrip
+echo "===== Summary =====" | tee -a "$LOG"
+grep -E '^(PASS|FAIL): ' "$LOG" | tail -n 4
+echo "Report: $LOG"
+echo "NOTE: This suite uses isolated fixtures only. It does NOT prove production panel quota exhaustion, multi-device public-IP behavior, or measured live throughput." | tee -a "$LOG"
+exit "$failed"
+
 
 echo "===== Summary =====" | tee -a "$LOG"
 grep -E '^(PASS|FAIL): ' "$LOG" | tail -n 4
