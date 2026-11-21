@@ -71,10 +71,10 @@ func TestTCPProbeNodeLifecycle(t *testing.T) {
 
 func TestTCPProbeOnlySupportedProtocols(t *testing.T) {
 	for _, tc := range []struct {
-		name string
+		name     string
 		protocol string
-		version int
-		enabled bool
+		version  int
+		enabled  bool
 	}{
 		{"hysteria2", "hysteria2", 0, true},
 		{"hysteria-v2", "hysteria", 2, true},
