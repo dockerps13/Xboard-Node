@@ -271,3 +271,33 @@ func TestXrayRemoveUsersStopsKernelWhenLastUserRemoved(t *testing.T) {
 		t.Fatal("expected xray to stop when last user is removed")
 	}
 }
+
+// SOCKS5 over TLS is automatically assigned to Xray by machine-mode kernel
+// selection. The runtime capability gate must not reject that same protocol.
+func TestXrayProtocolsAgreeWithMachineKernelSelection(t *testing.T) {
+	x := New(config.KernelConfig{Type: "xray"})
+	advertised := make(map[string]bool)
+	for _, protocol := range x.Protocols() {
+		advertised[protocol] = true
+	}
+	for _, tc := range []struct {
+		name string
+		node model.NodeSpec
+	}{
+		{name: "socks tls", node: model.NodeSpec{Protocol: "socks", TLS: 1}},
+		{name: "http with xray preference", node: model.NodeSpec{Protocol: "http"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			selected, err := model.ResolveKernelForNode(&tc.node, "singbox")
+			if tc.node.Protocol == "http" {
+				selected, err = model.ResolveKernelForNode(&tc.node, "xray")
+			}
+			if err != nil || selected != "xray" {
+				t.Fatalf("selected kernel = %q, error = %v; want xray", selected, err)
+			}
+			if !advertised[tc.node.Protocol] {
+				t.Fatalf("machine selected xray for %q but Xray.Protocols() rejects it", tc.node.Protocol)
+			}
+		})
+	}
+}
