@@ -721,6 +721,19 @@ func drainConns(ld *LimitDispatcher, timeout time.Duration) {
 	}
 }
 
+// statsIdentity returns the identity attached to Xray's authenticated
+// inbound session. SOCKS and HTTP use the login username (UUID) as
+// session.Inbound.User.Email, not the extra account email field.
+// Other protocols use the configured user@ID.
+func statsIdentity(protocol string, u model.UserSpec) string {
+	switch protocol {
+	case "socks", "http":
+		return u.UUID
+	default:
+		return userEmail(u.ID)
+	}
+}
+
 // aggregateStats is a fallback path that reads xray's built-in stats counters
 // when LimitDispatcher is not available. Returns per-user cumulative traffic.
 // Must be called with x.mu held.
@@ -736,7 +749,7 @@ func (x *Xray) aggregateStats() (map[int][2]int64, error) {
 
 	traffic := make(map[int][2]int64)
 	for _, u := range x.users {
-		email := userEmail(u.ID)
+		email := statsIdentity(x.protocol, u)
 
 		var dUp, dDown int64
 		if c := mgr.GetCounter(fmt.Sprintf("user>>>%s>>>traffic>>>uplink", email)); c != nil {
