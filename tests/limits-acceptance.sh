@@ -3,7 +3,17 @@
 # changes a node configuration, or sends traffic through user accounts.
 set -Eeuo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# When downloaded as a standalone script, prefer the source directory that
+# invoked it. In CI, resolve the repository root relative to this file.
+if [[ -f ./go.mod ]]; then
+  ROOT="$(pwd)"
+else
+  ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+fi
+if [[ ! -f "$ROOT/go.mod" ]]; then
+  echo "ERROR: run from the checked-out Xboard-Node source directory (go.mod missing)" >&2
+  exit 2
+fi
 cd "$ROOT"
 GO_BIN="${GO_BIN:-go}"
 TAGS="with_quic with_utls with_wireguard with_clash_api"
