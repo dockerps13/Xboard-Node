@@ -83,6 +83,10 @@ new report_id protocol.
    Enable it ONLY after verifying DB transactions, queue retries, report
    receipts, report UUID uniqueness, and all three statistics in staging.
 
+## Integer arithmetic and overflow acceptance
+
+The opt-in Laravel worker uses `App\\Services\\IdempotentBillingMath` for overflow-checked raw traffic aggregation and rate-adjusted integer values. Each user's `u/d` debit and daily user statistics receive the same bounded integer amounts; a batch exceeding the PHP signed integer range throws and the enclosing DB transaction rolls back instead of marking the batch applied. Run `php integrations/xboard-idempotent/tests/billing_math.php` as an isolated boundary check. Rates with fractional multipliers truncate per user, consistent with the existing daily statistics implementation; verify this convention against the actual panel before enabling idempotent reports.
+
 ## Invariants
 
 - A batch is acknowledged only after the ledger insert commits.

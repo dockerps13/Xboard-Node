@@ -6,6 +6,7 @@ use App\Models\ServerReportBatch;
 use App\Models\StatServer;
 use App\Models\StatUser;
 use App\Models\User;
+use App\Services\IdempotentBillingMath;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
@@ -73,12 +74,16 @@ class ApplyIdempotentServerReportJob implements ShouldQueue
                 $uid = (int) $uid;
                 $up = (int) $counts[0];
                 $down = (int) $counts[1];
-                $serverUp += $up;
-                $serverDown += $down;
+                $serverUp = IdempotentBillingMath::addRaw($serverUp, $up);
+                $serverDown = IdempotentBillingMath::addRaw($serverDown, $down);
+                $chargedUp = IdempotentBillingMath::chargedBytes($up, $rate);
+                $chargedDown = IdempotentBillingMath::chargedBytes($down, $rate);
 
+                // Keep user balance and daily stats on the exact same integer
+                // counters; reject overflow before executing the transaction.
                 User::where('id', $uid)->incrementEach([
-                    'u' => $up * $rate,
-                    'd' => $down * $rate,
+                    'u' => $chargedUp,
+                    'd' => $chargedDown,
                 ], ['t' => $now]);
 
                 $statRows[] = [
@@ -86,8 +91,8 @@ class ApplyIdempotentServerReportJob implements ShouldQueue
                     'server_rate' => $rate,
                     'record_at' => (int) $batch->record_at,
                     'record_type' => 'd',
-                    'u' => (int) ($up * $rate),
-                    'd' => (int) ($down * $rate),
+                    'u' => $chargedUp,
+                    'd' => $chargedDown,
                     'created_at' => $now,
                     'updated_at' => $now,
                 ];
