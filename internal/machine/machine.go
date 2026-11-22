@@ -10,8 +10,8 @@ import (
 	"time"
 
 	"github.com/cedar2025/xboard-node/internal/config"
-	"github.com/cedar2025/xboard-node/internal/devicegate"
 	"github.com/cedar2025/xboard-node/internal/controlplane"
+	"github.com/cedar2025/xboard-node/internal/devicegate"
 	"github.com/cedar2025/xboard-node/internal/model"
 	"github.com/cedar2025/xboard-node/internal/monitor"
 	"github.com/cedar2025/xboard-node/internal/nlog"
@@ -39,8 +39,8 @@ type Orchestrator struct {
 	cfg    *config.Config
 	client *panel.Client // machine-level client (no node_id)
 
-	mu    sync.Mutex
-	nodes map[int]*nodeHandle // node_id → handle
+	mu        sync.Mutex
+	nodes     map[int]*nodeHandle  // node_id → handle
 	admission *devicegate.Registry // shared by every protocol service on this machine
 
 	// Serializes discovery and per-node kernel restarts.
