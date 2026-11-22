@@ -67,8 +67,8 @@ type SingBox struct {
 
 	// deviceLimitFunc resolves a user UUID to (limit, hasLimit) for gate-keeping.
 	// Set once by SetDeviceLimitFunc and forwarded to every new ConnTracker.
-	deviceLimitFunc func(string) (int, bool)
-	admissionFunc   func(userID int, sourceIP string, limit int) (func(), bool)
+	deviceLimitFunc  func(string) (int, bool)
+	admissionFunc    func(userID int, sourceIP string, limit int) (func(), bool)
 	deviceChangeFunc func()
 
 	// trackerRegistered prevents duplicate AppendTracker calls on the same
