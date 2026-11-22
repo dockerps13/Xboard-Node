@@ -22,11 +22,10 @@ removing the temporary `socat` listeners; real panel billing and offline
 device/online count recovery; explicit scope decision about strict
 cross-node admission; upgrade/rollback and representative soak evidence.
 
-## V1.0.1 (pending release)
+## V1.0.1 (published 2026-11-20)
 
-This entry describes the source currently under final validation. It is not a
-published Release and must not be installed in production until the release
-gate is approved.
+GitHub Release v1.0.1 was published on 2026-11-20. The notes below describe
+its development work; v1.0.2 remains a separate unreleased candidate.
 
 - Share ACME account and certificate storage across ordinary `nodes:` instances,
   with migration, file locking, retry/backoff, renewal reload, validation, and
