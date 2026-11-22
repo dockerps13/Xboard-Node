@@ -78,7 +78,7 @@ new report_id protocol.
 4. Register `RecoverIdempotentServerReports` as an Artisan command if this
    Laravel version does not auto-discover `app/Console/Commands`. Schedule
    `php artisan traffic:recover-idempotent` once per minute on the test
-   panel. Keep a `traffic_fetch` queue worker running.
+   panel. Run a separately configured `idempotent_traffic` queue worker with safe timeouts; the existing 30-second `traffic_fetch` worker cannot handle this job.
 5. Add admin setting `server_idempotent_report_enable` with default `0`.
    Enable it ONLY after verifying DB transactions, queue retries, report
    receipts, report UUID uniqueness, and all three statistics in staging.
@@ -102,17 +102,21 @@ The opt-in Laravel worker uses `App\\Services\\IdempotentBillingMath` for overfl
 
 ## Additional simulated multi-node billing safety test
 
-Run `go test -count=1 ./internal/service -run '^TestTwoNodesLostBillingReceiptsRecoverWithoutDoubleCharge
+From repository root run:
 
-This integration has **not been installed or tested on your actual Vultr
-panel**. Verify MySQL/MariaDB indexes on `v2_stat_user` and
-`v2_stat_server`, plugins that hook traffic, multi-worker concurrency,
-Redis failures, midnight rate windows, and backend queue timeouts.
-Validate correct billing on a separate test machine ID with real clients.
+```bash
+go test -count=1 ./internal/service -run '^TestTwoNodesLostBillingReceiptsRecoverWithoutDoubleCharge$'
+```
 
-The node Go tests simulate a ledger with an HTTP ACK loss. That simulation
-is not proof that the Laravel integration works on the live panel.
-` from the repository root. This exercises two separate disk journals, concurrent HTTP submissions to a simulated shared ledger, lost 503 receipts after simulated commit, process restart and identical-ID replay. It asserts per-node one-time charging; it does **not** verify XBoard Laravel models, queue workers or actual balance changes. Do not enable the idempotent handshake flag before the live panel integration and database migration are safely verified.
+This exercises two separate node-scoped disk journals, simultaneous HTTP submissions to a *simulated* shared idempotent ledger, lost receipts after commit and identical-ID replay after process restart. This does not verify Laravel balance changes.
+
+## Production panel compatibility (read-only evidence from 2026-11-22)
+
+Your `soulook.org` panel currently runs Laravel 12, PHP 8.2 and MySQL. The live `UserService::trafficFetch` applies `traffic.process.before` and `traffic.before_process`, then sends three **separate** queued jobs in chunks of 1,000 users: `TrafficFetchJob` debits user `u/d`, `StatUserJob` applies rated `u/d` to `v2_stat_user`, and `StatServerJob` records **raw** `u/d` in `v2_stat_server` and `v2_server`. The opt-in job must reproduce these exact semantics while atomically committing all three accounting effects and the ledger applied marker. The existing user-stat and server-stat tables have unique indexes **without** `record_type` (respectively `server_rate,user_id,record_at` and `server_id,server_type,record_at`). Never add conflicting `record_type` rows without checking these indexes.
+
+**Critical queue mismatch discovered:** the existing production Horizon `data-pipeline` worker includes `traffic_fetch` with `timeout=30` seconds. The new combined ledger worker currently allows up to 180 seconds. It MUST NOT share this 30-second queue; it now routes to a dedicated `idempotent_traffic` queue that has **no running worker until explicitly configured**. Before enabling reports, configure an isolated PHP 8.2 Horizon supervisor which consumes ONLY `idempotent_traffic`, with worker/supervisor timeouts greater than the job's 180 seconds and a Redis `retry_after` greater than the configured worker timeout (for example, Horizon timeout=210 seconds, retry_after=240 seconds). Check actual Horizon and queue defaults, deploy scheduler-based recovery and verify retry backoff, worker restarts and throughput. Do not add the new queue to an existing 30-second supervisor.
+
+Until the dedicated worker and actual database tests exist, retain `server_idempotent_report_enable=0`; old nodes continue on their existing path. Never perform `artisan migrate` on the live database solely based on these reference instructions.
 
 ## Validation still needed before a commercial release
 

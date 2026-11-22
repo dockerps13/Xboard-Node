@@ -31,7 +31,7 @@ class ApplyIdempotentServerReportJob implements ShouldQueue
 
     public function __construct(public int $batchId)
     {
-        $this->onQueue('traffic_fetch');
+        $this->onQueue('idempotent_traffic');
     }
 
     public function backoff(): array
