@@ -68,7 +68,7 @@ type Xray struct {
 	lastKernelHash  string
 	cumTraffic      map[int][2]int64
 	speedLimitFunc  func(string) *rate.Limiter
-	admissionFunc func(userID int, sourceIP string, limit int) (func(), bool)
+	admissionFunc   func(userID int, sourceIP string, limit int) (func(), bool)
 
 	// running is set after a successful Start and cleared before shutdown.
 	// Atomic so IsRunning / GetConnections never block.
