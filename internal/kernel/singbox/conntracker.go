@@ -316,15 +316,15 @@ func (t *ConnTracker) RoutedConnection(
 	}
 
 	wrapped := &trackedConn{
-		Conn:     conn,
-		tracker:  t,
-		us:       us,
-		userID:   uid,
-		connID:   connID,
-		sourceIP: sourceIP,
+		Conn:             conn,
+		tracker:          t,
+		us:               us,
+		userID:           uid,
+		connID:           connID,
+		sourceIP:         sourceIP,
 		releaseAdmission: releaseAdmission,
-		limiter:  lim,
-		ctx:      ctx,
+		limiter:          lim,
+		ctx:              ctx,
 	}
 	if !t.registerConnection(connID, uuid, uid, wrapped) {
 		_ = wrapped.Close()
@@ -382,15 +382,15 @@ func (t *ConnTracker) RoutedPacketConnection(
 	}
 
 	wrapped := &trackedPacketConn{
-		PacketConn: conn,
-		tracker:    t,
-		us:         us,
-		userID:     uid,
-		connID:     connID,
-		sourceIP:   sourceIP,
+		PacketConn:       conn,
+		tracker:          t,
+		us:               us,
+		userID:           uid,
+		connID:           connID,
+		sourceIP:         sourceIP,
 		releaseAdmission: releaseAdmission,
-		limiter:    lim,
-		ctx:        ctx,
+		limiter:          lim,
+		ctx:              ctx,
 	}
 	if !t.registerConnection(connID, uuid, uid, wrapped) {
 		_ = wrapped.Close()
@@ -612,15 +612,15 @@ func (r *RateLimitedReadCloser) Read(b []byte) (int, error) {
 
 type trackedConn struct {
 	net.Conn
-	tracker  *ConnTracker
-	us       *userStats // per-user stats (upload/download atomics + IP tracking)
-	userID   int        // user ID for device tracking
-	connID   string
-	sourceIP string
+	tracker          *ConnTracker
+	us               *userStats // per-user stats (upload/download atomics + IP tracking)
+	userID           int        // user ID for device tracking
+	connID           string
+	sourceIP         string
 	releaseAdmission func()
-	limiter  *rate.Limiter
-	ctx      context.Context
-	closed   atomic.Bool
+	limiter          *rate.Limiter
+	ctx              context.Context
+	closed           atomic.Bool
 }
 
 func (c *trackedConn) Read(b []byte) (int, error) {
@@ -724,15 +724,15 @@ func (c *trackedConn) WriterReplaceable() bool { return c.limiter == nil }
 
 type trackedPacketConn struct {
 	N.PacketConn
-	tracker  *ConnTracker
-	us       *userStats
-	userID   int
-	connID   string
-	sourceIP string
+	tracker          *ConnTracker
+	us               *userStats
+	userID           int
+	connID           string
+	sourceIP         string
 	releaseAdmission func()
-	limiter  *rate.Limiter
-	ctx      context.Context
-	closed   atomic.Bool
+	limiter          *rate.Limiter
+	ctx              context.Context
+	closed           atomic.Bool
 }
 
 // waitPacketBudget charges an entire datagram without splitting it on the
