@@ -75,6 +75,8 @@ type Service struct {
 	pullActive atomic.Bool
 	// pullResults delivers async pullViaAPI results back to the main goroutine.
 	pullResults chan pullResult
+	// Buffered edge-trigger: kernel connection goroutines never block on WS/network.
+	deviceChanges chan struct{}
 
 	wsClient         controlplane.PushClient        // Push client (nil if push is not enabled)
 	wsEvents         chan controlplane.Event        // receives data events from push transport
@@ -189,6 +191,7 @@ func newService(cfg *config.Config, cp controlplane.ControlPlane) *Service {
 		wsEvents:     make(chan controlplane.Event, 16),
 		wsStatusCh:   make(chan controlplane.StatusChange, 4),
 		pullResults:  make(chan pullResult, 1),
+		deviceChanges: make(chan struct{}, 1),
 	}
 }
 
@@ -239,6 +242,12 @@ func (s *Service) Run(ctx context.Context) error {
 	reportTicker := time.NewTicker(pushInterval)
 	pullTicker := time.NewTicker(pullInterval)
 	deviceReportTicker := time.NewTicker(time.Duration(s.cfg.Node.DeviceReportInterval) * time.Second)
+	// Coalesce high-frequency connection churn without delaying indefinitely.
+	deviceEventTimer := time.NewTimer(time.Hour)
+	if !deviceEventTimer.Stop() {
+		<-deviceEventTimer.C
+	}
+	deviceEventPending := false
 	certRecoveryTicker := time.NewTicker(certificateRecoveryInterval)
 
 	// WS discovery: when in REST-only mode, periodically re-handshake to check
@@ -250,6 +259,7 @@ func (s *Service) Run(ctx context.Context) error {
 	defer reportTicker.Stop()
 	defer pullTicker.Stop()
 	defer deviceReportTicker.Stop()
+	defer deviceEventTimer.Stop()
 	defer certRecoveryTicker.Stop()
 	defer wsDiscoveryTicker.Stop()
 
@@ -282,6 +292,18 @@ func (s *Service) Run(ctx context.Context) error {
 
 		case <-deviceReportTicker.C:
 			s.reportDevices()
+
+		case <-s.deviceChanges:
+			if !deviceEventPending {
+				deviceEventPending = true
+				deviceEventTimer.Reset(350 * time.Millisecond)
+			}
+
+		case <-deviceEventTimer.C:
+			deviceEventPending = false
+			// Refresh online IPs without flushing or changing billing deltas.
+			s.trackAndEnforce(ctx)
+			s.sendDeviceBatch()
 
 		case <-certRecoveryTicker.C:
 			s.handleCertificateState(ctx)
@@ -317,6 +339,9 @@ func (s *Service) initialSetup(ctx context.Context) error {
 	// Register speed limit lookup with kernel unconditionally (before push/poll branch).
 	s.kernel.SetSpeedLimitFunc(s.speedTracker.GetLimiter)
 	s.kernel.SetDeviceLimitFunc(s.limiter.GetDeviceLimitByUUID)
+	if notifying, ok := s.kernel.(interface{ SetDeviceChangeFunc(func()) }); ok {
+		notifying.SetDeviceChangeFunc(s.signalDeviceChange)
+	}
 
 	bootstrap, err := s.source.Initial(ctx, s.wsMetrics, s.wsEvents, s.wsStatusCh)
 	if err != nil {
@@ -1583,6 +1608,15 @@ func computeUserHash(users []model.UserSpec) string {
 		h.Write(buf[:])
 	}
 	return fmt.Sprintf("%x", h.Sum(nil))
+}
+
+// signalDeviceChange is safe from transport goroutines and never waits for
+// network I/O, tracking, or the service main loop.
+func (s *Service) signalDeviceChange() {
+	select {
+	case s.deviceChanges <- struct{}{}:
+	default:
+	}
 }
 
 // ─── Device management ──────────────────────────────────────────────────
