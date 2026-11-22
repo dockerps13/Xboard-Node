@@ -1,0 +1,74 @@
+name: Publish v1.0.2
+
+on:
+  push:
+    branches: [dev]
+    paths:
+      - '.github/workflows/publish-v1.0.2.yml'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: publish-v1.0.2
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Verify Go and integration tests
+        run: |
+          set -euo pipefail
+          make test
+          go test -tags "with_quic with_utls with_wireguard with_clash_api" ./...
+          bash -n install.sh
+          bash tests/installer-safety.sh
+          bash tests/limits-acceptance.sh
+          php integrations/xboard-idempotent/tests/billing_math.php
+          php integrations/xboard-idempotent/tests/queue_wiring.php
+      - name: Build Linux amd64 and arm64 binaries
+        run: |
+          set -euo pipefail
+          make build-linux build-linux-arm64 VERSION=v1.0.2
+          ./xboard-node-linux-amd64 -v | grep -F v1.0.2
+          ./xbctl-linux-amd64 --help
+      - name: Assemble verified assets
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp xboard-node-linux-amd64 xboard-node-linux-arm64 xbctl-linux-amd64 xbctl-linux-arm64 install.sh dist/
+          printf '%s\n' "$GITHUB_SHA" > dist/SOURCE_COMMIT
+          cp CHANGELOG.md dist/CHANGELOG
+          (cd dist && sha256sum xboard-node-linux-amd64 xboard-node-linux-arm64 xbctl-linux-amd64 xbctl-linux-arm64 install.sh SOURCE_COMMIT CHANGELOG > SHA256SUMS)
+          (cd dist && sha256sum -c SHA256SUMS)
+      - name: Publish GitHub v1.0.2 release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if gh release view v1.0.2 >/dev/null 2>&1; then
+            echo "v1.0.2 already exists; refusing to overwrite"
+            exit 1
+          fi
+          gh release create v1.0.2 \
+            dist/xboard-node-linux-amd64 \
+            dist/xboard-node-linux-arm64 \
+            dist/xbctl-linux-amd64 \
+            dist/xbctl-linux-arm64 \
+            dist/install.sh \
+            dist/SOURCE_COMMIT \
+            dist/CHANGELOG \
+            dist/SHA256SUMS \
+            --target "$GITHUB_SHA" \
+            --title "Xboard-Node v1.0.2" \
+            --notes "v1.0.2 release binaries for Linux amd64 and arm64. SOURCE_COMMIT and SHA256SUMS identify exact source and assets. Optional Laravel idempotent billing and centralized device reservation integrations are NOT installed or enabled by this release. Cross-VPS strict device admission, real production billing failover, and long-duration staging acceptance have not been verified; do not enable these experimental integrations on production without completing the documented acceptance gates." \
+            --latest
