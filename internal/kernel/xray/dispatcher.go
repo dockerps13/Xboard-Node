@@ -72,13 +72,14 @@ type LimitDispatcher struct {
 
 	// limitedUsers: users with device limit > 0, protected by mu.
 	// Needs deterministic IP ordering for kick decisions.
-	mu            sync.RWMutex
-	limitedIPs    map[string]map[string]int // email → sourceIP → refcount
-	deviceLimits  map[string]int            // email → max devices
-	emailToUID    map[string]int            // email → panel user ID
-	globalDevices map[int]map[string]bool
-	globalUpdated time.Time
-	admissionFunc func(userID int, sourceIP string, limit int) (func(), bool)
+	mu               sync.RWMutex
+	limitedIPs       map[string]map[string]int // email → sourceIP → refcount
+	deviceLimits     map[string]int            // email → max devices
+	emailToUID       map[string]int            // email → panel user ID
+	globalDevices    map[int]map[string]bool
+	globalUpdated    time.Time
+	admissionFunc    func(userID int, sourceIP string, limit int) (func(), bool)
+	deviceChangeFunc func()
 
 	// unlimitedIPs: users without device limit — sync.Map for lock-free access.
 	// Each entry is *ipCounter{ips sync.Map}.
@@ -109,6 +110,22 @@ func (d *LimitDispatcher) SetAdmissionFunc(fn func(userID int, sourceIP string, 
 	d.mu.Lock()
 	d.admissionFunc = fn
 	d.mu.Unlock()
+}
+
+// SetDeviceChangeFunc installs a nonblocking notification supplied by Service.
+func (d *LimitDispatcher) SetDeviceChangeFunc(fn func()) {
+	d.mu.Lock()
+	d.deviceChangeFunc = fn
+	d.mu.Unlock()
+}
+
+func (d *LimitDispatcher) notifyDeviceChange() {
+	d.mu.RLock()
+	fn := d.deviceChangeFunc
+	d.mu.RUnlock()
+	if fn != nil {
+		fn()
+	}
 }
 
 // reserveMachineSlot uses authenticated account identity to allocate one
@@ -218,9 +235,11 @@ func (d *LimitDispatcher) trackLink(link *transport.Link, email, sourceIP string
 				d.delConn(email, sourceIP)
 			}
 			d.connCount.Add(-1)
+			d.notifyDeviceChange()
 		})
 	}
 
+	d.notifyDeviceChange()
 	link.Writer = &closeTrackingWriter{
 		Writer:  link.Writer,
 		onClose: onClose,

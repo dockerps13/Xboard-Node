@@ -141,8 +141,9 @@ type ConnTracker struct {
 	speedLimitFunc atomic.Pointer[func(uuid string) *rate.Limiter]
 
 	// deviceLimitFunc resolves a user UUID to their device limit.
-	deviceLimitFunc atomic.Pointer[func(uuid string) (int, bool)]
-	admissionFunc   atomic.Pointer[func(userID int, sourceIP string, limit int) (func(), bool)]
+	deviceLimitFunc  atomic.Pointer[func(uuid string) (int, bool)]
+	admissionFunc    atomic.Pointer[func(userID int, sourceIP string, limit int) (func(), bool)]
+	deviceChangeFunc atomic.Pointer[func()]
 
 	// Multi-node device state from panel
 	globalDevices    map[int]map[string]bool // userID → IP → exists
@@ -173,6 +174,17 @@ func (t *ConnTracker) SetDeviceLimitFunc(fn func(uuid string) (int, bool)) {
 // SetAdmissionFunc configures shared per-machine atomic admission.
 func (t *ConnTracker) SetAdmissionFunc(fn func(userID int, sourceIP string, limit int) (func(), bool)) {
 	t.admissionFunc.Store(&fn)
+}
+
+// SetDeviceChangeFunc supplies a nonblocking notification to report IP changes.
+func (t *ConnTracker) SetDeviceChangeFunc(fn func()) {
+	t.deviceChangeFunc.Store(&fn)
+}
+
+func (t *ConnTracker) notifyDeviceChange() {
+	if fn := t.deviceChangeFunc.Load(); fn != nil {
+		(*fn)()
+	}
 }
 
 // SetUserMap replaces the UUID→userID mapping and ensures per-user stats
@@ -330,6 +342,7 @@ func (t *ConnTracker) RoutedConnection(
 		_ = wrapped.Close()
 		return conn
 	}
+	t.notifyDeviceChange()
 	return wrapped
 }
 
@@ -396,6 +409,7 @@ func (t *ConnTracker) RoutedPacketConnection(
 		_ = wrapped.Close()
 		return conn
 	}
+	t.notifyDeviceChange()
 	return wrapped
 }
 
@@ -686,6 +700,7 @@ func (c *trackedConn) Close() error {
 			c.releaseAdmission()
 		}
 		c.tracker.removeConnRef(c.connID)
+		c.tracker.notifyDeviceChange()
 		return c.Conn.Close()
 	}
 	return nil
@@ -793,6 +808,7 @@ func (c *trackedPacketConn) Close() error {
 			c.releaseAdmission()
 		}
 		c.tracker.removeConnRef(c.connID)
+		c.tracker.notifyDeviceChange()
 		return c.PacketConn.Close()
 	}
 	return nil

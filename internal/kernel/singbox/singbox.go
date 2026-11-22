@@ -67,8 +67,9 @@ type SingBox struct {
 
 	// deviceLimitFunc resolves a user UUID to (limit, hasLimit) for gate-keeping.
 	// Set once by SetDeviceLimitFunc and forwarded to every new ConnTracker.
-	deviceLimitFunc func(string) (int, bool)
-	admissionFunc   func(userID int, sourceIP string, limit int) (func(), bool)
+	deviceLimitFunc  func(string) (int, bool)
+	admissionFunc    func(userID int, sourceIP string, limit int) (func(), bool)
+	deviceChangeFunc func()
 
 	// trackerRegistered prevents duplicate AppendTracker calls on the same
 	// Router instance during Reload. Reset to false on full restart.
@@ -212,6 +213,9 @@ func (s *SingBox) Start(nodeConfig *model.NodeSpec, users []model.UserSpec, tls 
 	}
 	if s.admissionFunc != nil {
 		s.connTracker.SetAdmissionFunc(s.admissionFunc)
+	}
+	if s.deviceChangeFunc != nil {
+		s.connTracker.SetDeviceChangeFunc(s.deviceChangeFunc)
 	}
 
 	s.trackerRegistered = false
@@ -589,6 +593,16 @@ func (s *SingBox) SetAdmissionFunc(fn func(userID int, sourceIP string, limit in
 	s.admissionFunc = fn
 	if s.connTracker != nil {
 		s.connTracker.SetAdmissionFunc(fn)
+	}
+}
+
+// SetDeviceChangeFunc wires fast device status updates without changing billing.
+func (s *SingBox) SetDeviceChangeFunc(fn func()) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.deviceChangeFunc = fn
+	if s.connTracker != nil {
+		s.connTracker.SetDeviceChangeFunc(fn)
 	}
 }
 

@@ -23,6 +23,14 @@ upgrades. Stage, observe, and rehearse rollback first. Real panel billing,
 cross-node limits, node disable/re-enable, reporting and disconnect tests
 are mandatory for a commercial release.
 
+## Candidate: fast online-device reports
+
+Xray and Sing-box notify the service when authenticated connections are added or closed. A coalesced 350ms event refreshes current per-user IP snapshots and sends the existing `report.devices` event when the panel WebSocket is connected; the periodic snapshot and regular REST/billing report continue unchanged. This is not a 350ms browser refresh guarantee: the panel WebSocket handler must accept `report.devices` and the XBoard user list must refresh its own view. When WebSocket is unavailable, the periodic REST path remains the durable fallback; device and traffic reports are not re-sent for every connection. Rejected device connections do not generate an online-device event. Test the real panel before promising 1–3s UI updates.
+
+### Live-device acceptance
+
+On staging: connect and disconnect two distinct public-IP clients and verify WebSocket `report.devices` snapshots include online and explicit offline records without touching user traffic accounting. Confirm the XBoard user list changes without manual refresh; if it does not, inspect panel-side event routing and browser polling separately. Test 1000+ connection churn, WS disconnected/reconnected, machine-mode shared WS, restart, and `2/2` rejection of a third IP. Never infer UI behavior from node logs alone.
+
 ## Historical v1.0.1 deployment guidance
 
 The following v1.0.1 instructions are retained as historical candidate guidance, **not** as the v1.0.2 release procedure.

@@ -57,18 +57,19 @@ type Xray struct {
 
 	// mu protects instance, limitDispatcher, users, protocol, inboundTag,
 	// lastKernelHash, and cumTraffic. Never held during slow I/O.
-	mu              sync.Mutex
-	instance        *xrayCore.Instance
-	limitDispatcher *LimitDispatcher
-	users           []model.UserSpec
-	nodeConfig      *model.NodeSpec
-	tls             kernel.TLSCert
-	protocol        string
-	inboundTag      string
-	lastKernelHash  string
-	cumTraffic      map[int][2]int64
-	speedLimitFunc  func(string) *rate.Limiter
-	admissionFunc   func(userID int, sourceIP string, limit int) (func(), bool)
+	mu               sync.Mutex
+	instance         *xrayCore.Instance
+	limitDispatcher  *LimitDispatcher
+	users            []model.UserSpec
+	nodeConfig       *model.NodeSpec
+	tls              kernel.TLSCert
+	protocol         string
+	inboundTag       string
+	lastKernelHash   string
+	cumTraffic       map[int][2]int64
+	speedLimitFunc   func(string) *rate.Limiter
+	admissionFunc    func(userID int, sourceIP string, limit int) (func(), bool)
+	deviceChangeFunc func()
 
 	// running is set after a successful Start and cleared before shutdown.
 	// Atomic so IsRunning / GetConnections never block.
@@ -156,6 +157,9 @@ func (x *Xray) Start(nodeConfig *model.NodeSpec, users []model.UserSpec, tls ker
 		ld.UpdateLimits(emailToUID, deviceLimits, nil)
 		if x.admissionFunc != nil {
 			ld.SetAdmissionFunc(x.admissionFunc)
+		}
+		if x.deviceChangeFunc != nil {
+			ld.SetDeviceChangeFunc(x.deviceChangeFunc)
 		}
 	}
 
@@ -307,6 +311,17 @@ func (x *Xray) SetAdmissionFunc(fn func(userID int, sourceIP string, limit int) 
 	x.mu.Unlock()
 	if ld != nil {
 		ld.SetAdmissionFunc(fn)
+	}
+}
+
+// SetDeviceChangeFunc provides immediate connection-change notifications.
+func (x *Xray) SetDeviceChangeFunc(fn func()) {
+	x.mu.Lock()
+	x.deviceChangeFunc = fn
+	ld := x.limitDispatcher
+	x.mu.Unlock()
+	if ld != nil {
+		ld.SetDeviceChangeFunc(fn)
 	}
 }
 
