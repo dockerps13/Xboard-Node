@@ -68,6 +68,7 @@ type Xray struct {
 	lastKernelHash  string
 	cumTraffic      map[int][2]int64
 	speedLimitFunc  func(string) *rate.Limiter
+	admissionFunc   func(userID int, sourceIP string, limit int) (func(), bool)
 
 	// running is set after a successful Start and cleared before shutdown.
 	// Atomic so IsRunning / GetConnections never block.
@@ -137,6 +138,27 @@ func (x *Xray) Start(nodeConfig *model.NodeSpec, users []model.UserSpec, tls ker
 		return fmt.Errorf("create xray: %w", err)
 	}
 
+	// Install user identities and the admission gate BEFORE starting listeners.
+	// Otherwise a connection arriving during instance.Start could bypass the
+	// machine-wide limit until Phase 4 has completed.
+	if ld != nil {
+		emailToUID := make(map[string]int, len(users)*2)
+		deviceLimits := make(map[string]int)
+		for _, u := range users {
+			email := userEmail(u.ID)
+			emailToUID[email] = u.ID
+			emailToUID[u.UUID] = u.ID
+			if u.DeviceLimit > 0 {
+				deviceLimits[email] = u.DeviceLimit
+				deviceLimits[u.UUID] = u.DeviceLimit
+			}
+		}
+		ld.UpdateLimits(emailToUID, deviceLimits, nil)
+		if x.admissionFunc != nil {
+			ld.SetAdmissionFunc(x.admissionFunc)
+		}
+	}
+
 	// ── Phase 3: Start new (no lock, potentially slow) ──────────────────
 	if err := startWithTimeout(inst, startTimeout); err != nil {
 		inst.Close()
@@ -168,6 +190,9 @@ func (x *Xray) Start(nodeConfig *model.NodeSpec, users []model.UserSpec, tls ker
 	closeOld(old, oldLD)
 
 	x.updateDispatcherLimits(users)
+	if x.admissionFunc != nil && ld != nil {
+		ld.SetAdmissionFunc(x.admissionFunc)
+	}
 	x.updateBandwidthLimits(users)
 
 	nlog.Core().Info("xray started",
@@ -273,6 +298,17 @@ func (x *Xray) SetSpeedLimitFunc(fn func(string) *rate.Limiter) {
 // SetDeviceLimitFunc is a no-op for xray — device limits are already
 // gate-kept by LimitDispatcher.checkDeviceLimit at Dispatch time.
 func (x *Xray) SetDeviceLimitFunc(_ func(string) (int, bool)) {}
+
+// SetAdmissionFunc installs shared machine-mode device admission for Xray.
+func (x *Xray) SetAdmissionFunc(fn func(userID int, sourceIP string, limit int) (func(), bool)) {
+	x.mu.Lock()
+	x.admissionFunc = fn
+	ld := x.limitDispatcher
+	x.mu.Unlock()
+	if ld != nil {
+		ld.SetAdmissionFunc(fn)
+	}
+}
 
 // UpdateGlobalDevices forwards panel snapshots to the active dispatcher.
 func (x *Xray) UpdateGlobalDevices(users map[int][]string) {

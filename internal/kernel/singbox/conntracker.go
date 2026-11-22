@@ -142,6 +142,7 @@ type ConnTracker struct {
 
 	// deviceLimitFunc resolves a user UUID to their device limit.
 	deviceLimitFunc atomic.Pointer[func(uuid string) (int, bool)]
+	admissionFunc   atomic.Pointer[func(userID int, sourceIP string, limit int) (func(), bool)]
 
 	// Multi-node device state from panel
 	globalDevices    map[int]map[string]bool // userID → IP → exists
@@ -167,6 +168,11 @@ func (t *ConnTracker) SetSpeedLimitFunc(fn func(uuid string) *rate.Limiter) {
 // SetDeviceLimitFunc configures the per-user device limit lookup for gate-keeping.
 func (t *ConnTracker) SetDeviceLimitFunc(fn func(uuid string) (int, bool)) {
 	t.deviceLimitFunc.Store(&fn)
+}
+
+// SetAdmissionFunc configures shared per-machine atomic admission.
+func (t *ConnTracker) SetAdmissionFunc(fn func(userID int, sourceIP string, limit int) (func(), bool)) {
+	t.admissionFunc.Store(&fn)
 }
 
 // SetUserMap replaces the UUID→userID mapping and ensures per-user stats
@@ -291,6 +297,16 @@ func (t *ConnTracker) RoutedConnection(
 		conn.Close()
 		return conn
 	}
+	var releaseAdmission func()
+	if admission := t.admissionFunc.Load(); admission != nil {
+		var ok bool
+		releaseAdmission, ok = (*admission)(uid, sourceIP, limit)
+		if !ok {
+			us.removeConn(sourceIP)
+			conn.Close()
+			return conn
+		}
+	}
 
 	connID := t.nextID()
 
@@ -300,14 +316,15 @@ func (t *ConnTracker) RoutedConnection(
 	}
 
 	wrapped := &trackedConn{
-		Conn:     conn,
-		tracker:  t,
-		us:       us,
-		userID:   uid,
-		connID:   connID,
-		sourceIP: sourceIP,
-		limiter:  lim,
-		ctx:      ctx,
+		Conn:             conn,
+		tracker:          t,
+		us:               us,
+		userID:           uid,
+		connID:           connID,
+		sourceIP:         sourceIP,
+		releaseAdmission: releaseAdmission,
+		limiter:          lim,
+		ctx:              ctx,
 	}
 	if !t.registerConnection(connID, uuid, uid, wrapped) {
 		_ = wrapped.Close()
@@ -346,6 +363,16 @@ func (t *ConnTracker) RoutedPacketConnection(
 		conn.Close()
 		return conn
 	}
+	var releaseAdmission func()
+	if admission := t.admissionFunc.Load(); admission != nil {
+		var ok bool
+		releaseAdmission, ok = (*admission)(uid, sourceIP, limit)
+		if !ok {
+			us.removeConn(sourceIP)
+			conn.Close()
+			return conn
+		}
+	}
 
 	connID := t.nextID()
 
@@ -355,14 +382,15 @@ func (t *ConnTracker) RoutedPacketConnection(
 	}
 
 	wrapped := &trackedPacketConn{
-		PacketConn: conn,
-		tracker:    t,
-		us:         us,
-		userID:     uid,
-		connID:     connID,
-		sourceIP:   sourceIP,
-		limiter:    lim,
-		ctx:        ctx,
+		PacketConn:       conn,
+		tracker:          t,
+		us:               us,
+		userID:           uid,
+		connID:           connID,
+		sourceIP:         sourceIP,
+		releaseAdmission: releaseAdmission,
+		limiter:          lim,
+		ctx:              ctx,
 	}
 	if !t.registerConnection(connID, uuid, uid, wrapped) {
 		_ = wrapped.Close()
@@ -584,14 +612,15 @@ func (r *RateLimitedReadCloser) Read(b []byte) (int, error) {
 
 type trackedConn struct {
 	net.Conn
-	tracker  *ConnTracker
-	us       *userStats // per-user stats (upload/download atomics + IP tracking)
-	userID   int        // user ID for device tracking
-	connID   string
-	sourceIP string
-	limiter  *rate.Limiter
-	ctx      context.Context
-	closed   atomic.Bool
+	tracker          *ConnTracker
+	us               *userStats // per-user stats (upload/download atomics + IP tracking)
+	userID           int        // user ID for device tracking
+	connID           string
+	sourceIP         string
+	releaseAdmission func()
+	limiter          *rate.Limiter
+	ctx              context.Context
+	closed           atomic.Bool
 }
 
 func (c *trackedConn) Read(b []byte) (int, error) {
@@ -653,6 +682,9 @@ func (c *trackedConn) Close() error {
 		if c.us != nil {
 			c.us.removeConn(c.sourceIP)
 		}
+		if c.releaseAdmission != nil {
+			c.releaseAdmission()
+		}
 		c.tracker.removeConnRef(c.connID)
 		return c.Conn.Close()
 	}
@@ -692,14 +724,15 @@ func (c *trackedConn) WriterReplaceable() bool { return c.limiter == nil }
 
 type trackedPacketConn struct {
 	N.PacketConn
-	tracker  *ConnTracker
-	us       *userStats
-	userID   int
-	connID   string
-	sourceIP string
-	limiter  *rate.Limiter
-	ctx      context.Context
-	closed   atomic.Bool
+	tracker          *ConnTracker
+	us               *userStats
+	userID           int
+	connID           string
+	sourceIP         string
+	releaseAdmission func()
+	limiter          *rate.Limiter
+	ctx              context.Context
+	closed           atomic.Bool
 }
 
 // waitPacketBudget charges an entire datagram without splitting it on the
@@ -755,6 +788,9 @@ func (c *trackedPacketConn) Close() error {
 	if c.closed.CompareAndSwap(false, true) {
 		if c.us != nil {
 			c.us.removeConn(c.sourceIP)
+		}
+		if c.releaseAdmission != nil {
+			c.releaseAdmission()
 		}
 		c.tracker.removeConnRef(c.connID)
 		return c.PacketConn.Close()

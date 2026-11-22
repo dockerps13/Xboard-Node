@@ -78,6 +78,7 @@ type LimitDispatcher struct {
 	emailToUID    map[string]int            // email → panel user ID
 	globalDevices map[int]map[string]bool
 	globalUpdated time.Time
+	admissionFunc func(userID int, sourceIP string, limit int) (func(), bool)
 
 	// unlimitedIPs: users without device limit — sync.Map for lock-free access.
 	// Each entry is *ipCounter{ips sync.Map}.
@@ -103,6 +104,27 @@ func (ic *ipCounter) aliveIPs() map[string]bool {
 	return result
 }
 
+// SetAdmissionFunc installs the process-local shared admission authority.
+func (d *LimitDispatcher) SetAdmissionFunc(fn func(userID int, sourceIP string, limit int) (func(), bool)) {
+	d.mu.Lock()
+	d.admissionFunc = fn
+	d.mu.Unlock()
+}
+
+// reserveMachineSlot uses authenticated account identity to allocate one
+// distinct-IP slot across every protocol service on this machine.
+func (d *LimitDispatcher) reserveMachineSlot(email, sourceIP string) (func(), bool) {
+	d.mu.RLock()
+	fn := d.admissionFunc
+	uid := d.emailToUID[email]
+	limit := d.deviceLimits[email]
+	d.mu.RUnlock()
+	if fn == nil || limit <= 0 {
+		return nil, true
+	}
+	return fn(uid, sourceIP, limit)
+}
+
 // ─── routing.Dispatcher ──────────────────────────────────────────────────────
 
 func (d *LimitDispatcher) Dispatch(ctx context.Context, dest net.Destination) (*transport.Link, error) {
@@ -110,17 +132,27 @@ func (d *LimitDispatcher) Dispatch(ctx context.Context, dest net.Destination) (*
 	if err != nil {
 		return nil, err
 	}
+	release, admitted := d.reserveMachineSlot(email, sourceIP)
+	if !admitted {
+		if isTCP {
+			d.delConn(email, sourceIP)
+		}
+		return nil, errors.New("machine device limit exceeded")
+	}
 
 	link, err := d.innerDisp.Dispatch(ctx, dest)
 	if err != nil {
 		if email != "" && isTCP {
 			d.delConn(email, sourceIP)
 		}
+		if release != nil {
+			release()
+		}
 		return nil, err
 	}
 
 	if email != "" {
-		d.trackLink(link, email, sourceIP, isTCP)
+		d.trackLink(link, email, sourceIP, isTCP, release)
 	}
 	return link, nil
 }
@@ -130,11 +162,23 @@ func (d *LimitDispatcher) DispatchLink(ctx context.Context, dest net.Destination
 	if err != nil {
 		return err
 	}
-
-	if email != "" {
-		d.trackLink(link, email, sourceIP, isTCP)
+	release, admitted := d.reserveMachineSlot(email, sourceIP)
+	if !admitted {
+		if isTCP {
+			d.delConn(email, sourceIP)
+		}
+		return errors.New("machine device limit exceeded")
 	}
-	return d.innerDisp.DispatchLink(ctx, dest, link)
+
+	var cleanup func()
+	if email != "" {
+		cleanup = d.trackLink(link, email, sourceIP, isTCP, release)
+	}
+	err = d.innerDisp.DispatchLink(ctx, dest, link)
+	if err != nil && cleanup != nil {
+		cleanup()
+	}
+	return err
 }
 
 // identifyAndCheck extracts user identity from the session context, enforces
@@ -162,20 +206,26 @@ func (d *LimitDispatcher) identifyAndCheck(ctx context.Context, dest net.Destina
 // trackLink records connection lifecycle without mutating xray-core owned
 // transport primitives. This keeps mux/XUDP compatible while still allowing
 // the dispatcher to release device-limit state when the link closes.
-func (d *LimitDispatcher) trackLink(link *transport.Link, email, sourceIP string, isTCP bool) {
+func (d *LimitDispatcher) trackLink(link *transport.Link, email, sourceIP string, isTCP bool, releases ...func()) func() {
 	d.connCount.Add(1)
-
+	var once sync.Once
 	onClose := func() {
-		if isTCP {
-			d.delConn(email, sourceIP)
-		}
-		d.connCount.Add(-1)
+		once.Do(func() {
+			if len(releases) > 0 && releases[0] != nil {
+				releases[0]()
+			}
+			if isTCP {
+				d.delConn(email, sourceIP)
+			}
+			d.connCount.Add(-1)
+		})
 	}
 
 	link.Writer = &closeTrackingWriter{
 		Writer:  link.Writer,
 		onClose: onClose,
 	}
+	return onClose
 }
 
 // ─── features.Feature (delegated) ───────────────────────────────────────────

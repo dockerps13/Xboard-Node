@@ -11,6 +11,7 @@ import (
 
 	"github.com/cedar2025/xboard-node/internal/config"
 	"github.com/cedar2025/xboard-node/internal/controlplane"
+	"github.com/cedar2025/xboard-node/internal/devicegate"
 	"github.com/cedar2025/xboard-node/internal/model"
 	"github.com/cedar2025/xboard-node/internal/monitor"
 	"github.com/cedar2025/xboard-node/internal/nlog"
@@ -38,8 +39,9 @@ type Orchestrator struct {
 	cfg    *config.Config
 	client *panel.Client // machine-level client (no node_id)
 
-	mu    sync.Mutex
-	nodes map[int]*nodeHandle // node_id → handle
+	mu        sync.Mutex
+	nodes     map[int]*nodeHandle  // node_id → handle
+	admission *devicegate.Registry // shared by every protocol service on this machine
 
 	// Serializes discovery and per-node kernel restarts.
 	lifecycleMu sync.Mutex
@@ -73,6 +75,7 @@ func New(cfg *config.Config) *Orchestrator {
 		cfg:        cfg,
 		client:     panel.NewClient(panelCfg),
 		nodes:      make(map[int]*nodeHandle),
+		admission:  devicegate.New(),
 		mailboxes:  make(map[int]*controlplane.NodeMailbox),
 		statuses:   make(map[int]chan<- controlplane.StatusChange),
 		discoverCh: make(chan struct{}, 1),
@@ -215,6 +218,11 @@ func (o *Orchestrator) startNode(ctx context.Context, mn panel.MachineNode) {
 	cp := controlplane.NewMachinePanelControlPlane(perNodeClient, nodeCfg.Kernel, push, registerFn)
 	cp.SetInitialConfig(initialSnapshot)
 	svc := service.NewWithControlPlane(nodeCfg, cp)
+	// All protocols and both kernels on this authenticated machine use one
+	// atomic per-user public-IP admission table rather than per-node quotas.
+	svc.SetAdmissionFunc(func(userID int, sourceIP string, limit int) (func(), bool) {
+		return o.admission.Acquire(fmt.Sprintf("%s/%d", o.cfg.Panel.URL, o.cfg.Machine.MachineID), userID, sourceIP, limit)
+	})
 
 	nlog.Core().Info(fmt.Sprintf("machine: starting node %d (%s/%s)",
 		mn.ID, mn.Type, mn.Name))
