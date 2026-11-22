@@ -170,17 +170,13 @@ func (d *LimitDispatcher) DispatchLink(ctx context.Context, dest net.Destination
 		return errors.New("machine device limit exceeded")
 	}
 
+	var cleanup func()
 	if email != "" {
-		d.trackLink(link, email, sourceIP, isTCP, release)
+		cleanup = d.trackLink(link, email, sourceIP, isTCP, release)
 	}
 	err = d.innerDisp.DispatchLink(ctx, dest, link)
-	if err != nil {
-		if release != nil {
-			release()
-		}
-		if email != "" && isTCP {
-			d.delConn(email, sourceIP)
-		}
+	if err != nil && cleanup != nil {
+		cleanup()
 	}
 	return err
 }
@@ -210,23 +206,26 @@ func (d *LimitDispatcher) identifyAndCheck(ctx context.Context, dest net.Destina
 // trackLink records connection lifecycle without mutating xray-core owned
 // transport primitives. This keeps mux/XUDP compatible while still allowing
 // the dispatcher to release device-limit state when the link closes.
-func (d *LimitDispatcher) trackLink(link *transport.Link, email, sourceIP string, isTCP bool, releases ...func()) {
+func (d *LimitDispatcher) trackLink(link *transport.Link, email, sourceIP string, isTCP bool, releases ...func()) func() {
 	d.connCount.Add(1)
-
+	var once sync.Once
 	onClose := func() {
-		if len(releases) > 0 && releases[0] != nil {
-			releases[0]()
-		}
-		if isTCP {
-			d.delConn(email, sourceIP)
-		}
-		d.connCount.Add(-1)
+		once.Do(func() {
+			if len(releases) > 0 && releases[0] != nil {
+				releases[0]()
+			}
+			if isTCP {
+				d.delConn(email, sourceIP)
+			}
+			d.connCount.Add(-1)
+		})
 	}
 
 	link.Writer = &closeTrackingWriter{
 		Writer:  link.Writer,
 		onClose: onClose,
 	}
+	return onClose
 }
 
 // ─── features.Feature (delegated) ───────────────────────────────────────────
