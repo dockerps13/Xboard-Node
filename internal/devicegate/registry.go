@@ -11,12 +11,12 @@ import (
 // Registry tracks admitted connections grouped by panel scope and user ID.
 // Every acquisition has its own release token. IPs share one device slot.
 type Registry struct {
-	mu sync.Mutex
+	mu     sync.Mutex
 	owners map[key]map[string]int
 }
 
 type key struct {
-	scope string
+	scope  string
 	userID int
 }
 
