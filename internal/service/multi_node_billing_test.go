@@ -28,9 +28,9 @@ func TestTwoNodesLostBillingReceiptsRecoverWithoutDoubleCharge(t *testing.T) {
 	seen := make(map[ledgerKey][2]int64)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
-			NodeID int                 `json:"node_id"`
-			ReportID string           `json:"report_id"`
-			Traffic map[string][2]int64 `json:"traffic"`
+			NodeID   int                 `json:"node_id"`
+			ReportID string              `json:"report_id"`
+			Traffic  map[string][2]int64 `json:"traffic"`
 		}
 		if r.URL.Path != "/api/v2/server/report" || json.NewDecoder(r.Body).Decode(&body) != nil || body.ReportID == "" {
 			http.Error(w, "invalid simulated report", http.StatusBadRequest)
@@ -60,9 +60,9 @@ func TestTwoNodesLostBillingReceiptsRecoverWithoutDoubleCharge(t *testing.T) {
 	defer server.Close()
 
 	type node struct {
-		id int
+		id          int
 		journalPath string
-		bytes [2]int64
+		bytes       [2]int64
 	}
 	nodes := []node{
 		{id: 21, journalPath: filepath.Join(t.TempDir(), "machine-24", "node-21"), bytes: [2]int64{1200, 3300}},
@@ -70,7 +70,9 @@ func TestTwoNodesLostBillingReceiptsRecoverWithoutDoubleCharge(t *testing.T) {
 	}
 	send := func(n node, first bool) error {
 		j, err := reportjournal.Open(n.journalPath)
-		if err != nil { return err }
+		if err != nil {
+			return err
+		}
 		cfg := &config.Config{}
 		svc := newService(cfg, controlplane.NewLocalControlPlane(cfg))
 		svc.reportJournal = j
@@ -97,7 +99,9 @@ func TestTwoNodesLostBillingReceiptsRecoverWithoutDoubleCharge(t *testing.T) {
 	}
 	wg.Wait()
 	for i, err := range firstErrors {
-		if err == nil { t.Fatalf("node %d: lost ACK unexpectedly succeeded", nodes[i].id) }
+		if err == nil {
+			t.Fatalf("node %d: lost ACK unexpectedly succeeded", nodes[i].id)
+		}
 	}
 	// Each journal is reopened as if its process restarted.
 	retryErrors := make([]error, len(nodes))
@@ -110,9 +114,13 @@ func TestTwoNodesLostBillingReceiptsRecoverWithoutDoubleCharge(t *testing.T) {
 	}
 	wg.Wait()
 	for i, n := range nodes {
-		if retryErrors[i] != nil { t.Fatalf("node %d recovery failed: %v", n.id, retryErrors[i]) }
+		if retryErrors[i] != nil {
+			t.Fatalf("node %d recovery failed: %v", n.id, retryErrors[i])
+		}
 		j, err := reportjournal.Open(n.journalPath)
-		if err != nil { t.Fatal(err) }
+		if err != nil {
+			t.Fatal(err)
+		}
 		pending, err := j.Pending()
 		if err != nil || len(pending) != 0 {
 			t.Fatalf("node %d pending after ack: %v, %v", n.id, pending, err)
@@ -129,6 +137,8 @@ func TestTwoNodesLostBillingReceiptsRecoverWithoutDoubleCharge(t *testing.T) {
 		}
 	}
 	for key, count := range attempts {
-		if count != 2 { t.Errorf("node %d batch %s attempted %d times, want twice", key.node, key.id, count) }
+		if count != 2 {
+			t.Errorf("node %d batch %s attempted %d times, want twice", key.node, key.id, count)
+		}
 	}
 }
