@@ -57,7 +57,9 @@ func TestAdmissionIsolationAndFailClosed(t *testing.T) {
 		{"", 1, "192.0.2.1"}, {"panel-a", 0, "192.0.2.1"},
 		{"panel-a", 1, "invalid"}, {"panel-a", 1, "192.0.2.1:1234"},
 	} {
-		if _, ok := r.Acquire(x.scope, x.user, x.ip, 1); ok { t.Fatalf("accepted invalid %+v", x) }
+		if _, ok := r.Acquire(x.scope, x.user, x.ip, 1); ok {
+			t.Fatalf("accepted invalid %+v", x)
+		}
 	}
 	a, ok := r.Acquire("panel-a", 1, "192.0.2.1", 1)
 	if !ok {
