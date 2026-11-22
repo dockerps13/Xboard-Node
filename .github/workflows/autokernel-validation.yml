@@ -40,6 +40,7 @@ jobs:
             xargs -0 -n 1 php -l
           php integrations/xboard-device-snapshots/tests/snapshot.php
           php integrations/xboard-idempotent/tests/billing_math.php
+          php integrations/xboard-idempotent/tests/queue_wiring.php
       - name: Redis device reservation concurrency tests
         run: |
           sudo apt-get update
