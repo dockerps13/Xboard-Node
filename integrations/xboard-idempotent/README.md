@@ -96,6 +96,20 @@ new report_id protocol.
   delayed queue processing. Daily statistics use the stored receipt date.
 - Legacy nodes remain unaffected.
 
+## Additional simulated multi-node billing safety test
+
+Run `go test -count=1 ./internal/service -run '^TestTwoNodesLostBillingReceiptsRecoverWithoutDoubleCharge
+
+This integration has **not been installed or tested on your actual Vultr
+panel**. Verify MySQL/MariaDB indexes on `v2_stat_user` and
+`v2_stat_server`, plugins that hook traffic, multi-worker concurrency,
+Redis failures, midnight rate windows, and backend queue timeouts.
+Validate correct billing on a separate test machine ID with real clients.
+
+The node Go tests simulate a ledger with an HTTP ACK loss. That simulation
+is not proof that the Laravel integration works on the live panel.
+` from the repository root. This exercises two separate disk journals, concurrent HTTP submissions to a simulated shared ledger, lost 503 receipts after simulated commit, process restart and identical-ID replay. It asserts per-node one-time charging; it does **not** verify XBoard Laravel models, queue workers or actual balance changes. Do not enable the idempotent handshake flag before the live panel integration and database migration are safely verified.
+
 ## Validation still needed before a commercial release
 
 This integration has **not been installed or tested on your actual Vultr
