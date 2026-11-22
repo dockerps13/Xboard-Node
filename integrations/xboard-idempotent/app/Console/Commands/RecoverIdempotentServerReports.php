@@ -25,7 +25,7 @@ class RecoverIdempotentServerReports extends Command
             ->pluck('id')
             ->each(function ($id) use (&$count) {
                 ApplyIdempotentServerReportJob::dispatch((int) $id)
-                    ->onQueue('traffic_fetch');
+                    ->onQueue('idempotent_traffic');
                 $count++;
             });
 
