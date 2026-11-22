@@ -146,7 +146,9 @@ func New(cfg *config.Config) *Service {
 // SetAdmissionFunc wires the shared per-machine admission authority before Run.
 // Standalone services are unchanged unless explicitly configured.
 func (s *Service) SetAdmissionFunc(fn func(userID int, sourceIP string, limit int) (func(), bool)) {
-	if k, ok := s.kernel.(interface{ SetAdmissionFunc(func(userID int, sourceIP string, limit int) (func(), bool)) }); ok {
+	if k, ok := s.kernel.(interface {
+		SetAdmissionFunc(func(userID int, sourceIP string, limit int) (func(), bool))
+	}); ok {
 		k.SetAdmissionFunc(fn)
 	}
 }
