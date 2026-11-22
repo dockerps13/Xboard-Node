@@ -3,8 +3,10 @@ package singbox
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"net/netip"
+	"sync"
 	"testing"
 	"time"
 
@@ -36,8 +38,6 @@ func TestSingBoxCapabilities(t *testing.T) {
 	}
 }
 
-
-
 type testConn struct {
 	closed bool
 	reads  [][]byte
@@ -60,11 +60,11 @@ func (c *testConn) Write(b []byte) (int, error) {
 	return len(b), nil
 }
 
-func (c *testConn) Close() error { c.closed = true; return nil }
-func (c *testConn) LocalAddr() net.Addr { return &net.TCPAddr{} }
-func (c *testConn) RemoteAddr() net.Addr { return &net.TCPAddr{} }
-func (c *testConn) SetDeadline(time.Time) error { return nil }
-func (c *testConn) SetReadDeadline(time.Time) error { return nil }
+func (c *testConn) Close() error                     { c.closed = true; return nil }
+func (c *testConn) LocalAddr() net.Addr              { return &net.TCPAddr{} }
+func (c *testConn) RemoteAddr() net.Addr             { return &net.TCPAddr{} }
+func (c *testConn) SetDeadline(time.Time) error      { return nil }
+func (c *testConn) SetReadDeadline(time.Time) error  { return nil }
 func (c *testConn) SetWriteDeadline(time.Time) error { return nil }
 
 func testInboundContext(uuid, ip string) adapter.InboundContext {
@@ -142,24 +142,47 @@ func TestConnTrackerRoutedConnectionRejectsWhenDeviceLimitExceeded(t *testing.T)
 	}
 }
 
-func TestConnTrackerCheckDeviceGateMergesFreshGlobalDevices(t *testing.T) {
+func TestConnTrackerDeviceAdmissionMergesFreshGlobalDevices(t *testing.T) {
 	tracker := NewConnTracker(0)
 	tracker.SetUserMap(map[string]int{"uuid-1": 1})
 	us := tracker.users[1]
 	us.addConn("1.1.1.1")
 	tracker.UpdateGlobalDevices(map[int][]string{1: {"9.9.9.9"}})
+	if tracker.admitDevice(us, 1, "2.2.2.2", 2) {
+		t.Fatal("new IP must not displace an active IP")
+	}
+	if !tracker.admitDevice(us, 1, "1.1.1.1", 2) || !tracker.admitDevice(us, 1, "9.9.9.9", 2) {
+		t.Fatal("known local and global IPs should remain allowed")
+	}
+	if tracker.admitDevice(us, 1, "99.99.99.99", 2) {
+		t.Fatal("third distinct IP must be rejected")
+	}
+	us.removeConn("1.1.1.1")
+	us.removeConn("1.1.1.1")
+	if !tracker.admitDevice(us, 1, "2.2.2.2", 2) {
+		t.Fatal("released device slot should become available")
+	}
+}
 
-	if tracker.checkDeviceGate(us, 1, "2.2.2.2", 2) {
-		t.Fatal("expected lexicographically earlier candidate to remain allowed")
+func TestConcurrentDeviceAdmission(t *testing.T) {
+	tracker := NewConnTracker(0)
+	tracker.SetUserMap(map[string]int{"uuid-1": 1})
+	us := tracker.users[1]
+	const limit = 3
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for i := 1; i <= 100; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			tracker.admitDevice(us, 1, fmt.Sprintf("192.0.2.%d", i), limit)
+		}(i)
 	}
-	if !tracker.checkDeviceGate(us, 1, "99.99.99.99", 2) {
-		t.Fatal("expected merged local+global device state to reject lexicographically later third device")
-	}
-	if tracker.checkDeviceGate(us, 1, "1.1.1.1", 2) {
-		t.Fatal("existing local IP should still be allowed")
-	}
-	if tracker.checkDeviceGate(us, 1, "9.9.9.9", 2) {
-		t.Fatal("existing global IP should still be allowed")
+	close(start)
+	wg.Wait()
+	if got := us.distinctIPs(); got != limit {
+		t.Fatalf("admitted %d IPs, want %d", got, limit)
 	}
 }
 

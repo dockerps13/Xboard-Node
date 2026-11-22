@@ -3,9 +3,12 @@ package panel
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/http/httptrace"
 	"net/url"
 	"reflect"
 	"strconv"
@@ -91,8 +94,7 @@ func (c *Client) Handshake() (*HandshakeResponse, error) {
 	defer drainAndClose(resp.Body)
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return nil, fmt.Errorf("handshake status %d: %s", resp.StatusCode, body)
+		return nil, fmt.Errorf("handshake status %d", resp.StatusCode)
 	}
 
 	var hs HandshakeResponse
@@ -110,7 +112,20 @@ func (c *Client) Report(traffic map[int][2]int64, alive map[int][]string, online
 	cpu float64, mem, swap, disk [2]uint64,
 	metrics map[string]interface{},
 ) error {
+	return c.ReportWithBatchID("", traffic, alive, online, cpu, mem, swap, disk, metrics)
+}
+
+// ReportWithBatchID retains the legacy wire format when batchID is empty.
+// Non-empty IDs are ONLY safe with a panel advertising atomic report-ID
+// deduplication; callers must never assume legacy panels honor the field.
+func (c *Client) ReportWithBatchID(batchID string, traffic map[int][2]int64, alive map[int][]string, online map[int]int,
+	cpu float64, mem, swap, disk [2]uint64,
+	metrics map[string]interface{},
+) error {
 	payload := make(map[string]interface{})
+	if batchID != "" {
+		payload["report_id"] = batchID
+	}
 
 	if len(traffic) > 0 {
 		t := trafficMapPool.Get().(map[string][2]int64)
@@ -129,6 +144,9 @@ func (c *Client) Report(traffic map[int][2]int64, alive map[int][]string, online
 	if len(alive) > 0 {
 		a := aliveMapPool.Get().(map[string][]string)
 		for uid, ips := range alive {
+			if ips == nil {
+				ips = []string{}
+			}
 			a[strconv.Itoa(uid)] = ips
 		}
 		payload["alive"] = a
@@ -227,8 +245,7 @@ func (c *Client) GetConfig() (*NodeConfig, error) {
 		return nil, nil
 	}
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return nil, fmt.Errorf("status %d: %s", resp.StatusCode, body)
+		return nil, fmt.Errorf("status %d", resp.StatusCode)
 	}
 
 	var raw map[string]interface{}
@@ -239,7 +256,7 @@ func (c *Client) GetConfig() (*NodeConfig, error) {
 	var cfg NodeConfig
 	// Use mapstructure for weak type conversion (string -> int, bool -> string, etc.)
 	if err := decodeWeakRaw(raw, &cfg); err != nil {
-		return nil, fmt.Errorf("weak decode config: %w", err)
+		return nil, fmt.Errorf("invalid config fields")
 	}
 
 	// Basic validation
@@ -265,8 +282,7 @@ func (c *Client) GetUsers() ([]User, error) {
 		return nil, nil
 	}
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return nil, fmt.Errorf("status %d: %s", resp.StatusCode, body)
+		return nil, fmt.Errorf("status %d", resp.StatusCode)
 	}
 
 	var usersResp UsersResponse
@@ -330,8 +346,7 @@ func (c *Client) GetMachineNodes() (*MachineNodesResponse, error) {
 	defer drainAndClose(resp.Body)
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return nil, fmt.Errorf("machine nodes status %d: %s", resp.StatusCode, body)
+		return nil, fmt.Errorf("machine nodes status %d", resp.StatusCode)
 	}
 
 	var out MachineNodesResponse
@@ -390,6 +405,20 @@ func (c *Client) authQuery() url.Values {
 	return q
 }
 
+// reportResultError describes a failed receipt without logging the response
+// body, which may contain credentials or other private panel data.
+type reportResultError struct {
+	stage  string
+	status int
+}
+
+func (e *reportResultError) Error() string {
+	if e.status != 0 {
+		return fmt.Sprintf("report outcome unconfirmed: %s (HTTP %d)", e.stage, e.status)
+	}
+	return "report outcome unconfirmed: " + e.stage
+}
+
 // postJSON marshals a map payload (with auth fields injected) and POSTs it.
 func (c *Client) postJSON(path string, payload map[string]interface{}) error {
 	c.injectAuth(payload)
@@ -401,15 +430,58 @@ func (c *Client) postJSON(path string, payload map[string]interface{}) error {
 
 	resp, err := c.doRequest("POST", path, body, "")
 	if err != nil {
+		if path == "/api/v2/server/report" {
+			if IsReportNotSent(err) {
+				return err
+			}
+			return &reportResultError{stage: "transport failure"}
+		}
 		return fmt.Errorf("post %s: %w", path, err)
 	}
 	defer drainAndClose(resp.Body)
 
 	if resp.StatusCode != http.StatusOK {
-		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return fmt.Errorf("status %d: %s", resp.StatusCode, respBody)
+		if path == "/api/v2/server/report" {
+			return &reportResultError{stage: "non-success response", status: resp.StatusCode}
+		}
+		return fmt.Errorf("status %d", resp.StatusCode)
 	}
-	c.apiSuccess.Add(1)
+	// An HTTP 200 alone is not an accounting receipt. Older XBoard
+	// deployments sometimes return an empty body, so preserve that
+	// compatibility, but never silently accept an explicit false result.
+	if path == "/api/v2/server/report" {
+		raw, err := io.ReadAll(io.LimitReader(resp.Body, 65536))
+		if err != nil {
+			return &reportResultError{stage: "receipt read failure"}
+		}
+		var envelope map[string]json.RawMessage
+		if json.Unmarshal(raw, &envelope) == nil {
+			for _, key := range []string{"data", "success"} {
+				if value, ok := envelope[key]; ok {
+					var accepted bool
+					if json.Unmarshal(value, &accepted) == nil && !accepted {
+						return fmt.Errorf("panel explicitly rejected report (%s=false)", key)
+					}
+				}
+			}
+		}
+		// A panel must prove it handled our idempotency key, rather than
+		// silently accepting an unknown JSON field with legacy semantics.
+		if requestedID, ok := payload["report_id"].(string); ok && requestedID != "" {
+			var receipt struct {
+				Data struct {
+					ReportID string `json:"report_id"`
+					Accepted bool   `json:"accepted"`
+				} `json:"data"`
+			}
+			if err := json.Unmarshal(raw, &receipt); err != nil {
+				return &reportResultError{stage: "invalid idempotent receipt"}
+			}
+			if receipt.Data.ReportID != requestedID || !receipt.Data.Accepted {
+				return &reportResultError{stage: "idempotent receipt mismatch or not accepted"}
+			}
+		}
+	}
 	return nil
 }
 
@@ -430,7 +502,7 @@ func (c *Client) doRequest(method, path string, body []byte, ifNoneMatch string)
 
 	req, err := http.NewRequest(method, fullURL, bodyReader)
 	if err != nil {
-		return nil, err
+		return nil, safePanelTransportError(err)
 	}
 
 	req.Header.Set("Content-Type", "application/json")
@@ -441,10 +513,20 @@ func (c *Client) doRequest(method, path string, body []byte, ifNoneMatch string)
 
 	nlog.Core().Debug("panel request", "method", method, "path", path)
 
+	var gotConn atomic.Bool
+	_, standardTransport := c.httpClient.Transport.(*http.Transport)
+	if path == "/api/v2/server/report" && standardTransport {
+		trace := &httptrace.ClientTrace{GotConn: func(httptrace.GotConnInfo) { gotConn.Store(true) }}
+		req = req.WithContext(httptrace.WithClientTrace(req.Context(), trace))
+	}
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		c.apiFailure.Add(1)
-		return nil, err
+		var op *net.OpError
+		if path == "/api/v2/server/report" && standardTransport && !gotConn.Load() && errors.As(err, &op) && op.Op == "dial" {
+			return nil, &reportNotSentError{}
+		}
+		return nil, safePanelTransportError(err)
 	}
 
 	if resp.StatusCode >= 200 && resp.StatusCode < 400 {
@@ -476,4 +558,43 @@ func (c *Client) SnapshotMetrics() APIMetrics {
 		Success: c.apiSuccess.Load(),
 		Failure: c.apiFailure.Load(),
 	}
+}
+
+// GetGlobalDevices reads a full node-authorized snapshot from an opt-in panel.
+// A missing or null users object is invalid; an empty object clears the snapshot.
+func (c *Client) GetGlobalDevices() (map[int][]string, error) {
+	resp, err := c.doRequest("POST", "/api/v2/server/devices", nil, "")
+	if err != nil {
+		return nil, err
+	}
+	defer drainAndClose(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("global devices HTTP %d", resp.StatusCode)
+	}
+	var result struct {
+		Users map[int][]string `json:"users"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 16<<20)).Decode(&result); err != nil {
+		return nil, err
+	}
+	if result.Users == nil {
+		return nil, fmt.Errorf("global devices response missing users object")
+	}
+	for uid, ips := range result.Users {
+		if uid <= 0 || ips == nil {
+			return nil, fmt.Errorf("invalid global device snapshot entry")
+		}
+	}
+	return result.Users, nil
+}
+
+// reportNotSentError is emitted only for a standard HTTP transport dial
+// failure before any connection was obtained for this report.
+type reportNotSentError struct{}
+
+func (*reportNotSentError) Error() string { return "report not sent: connection dial failed" }
+
+func IsReportNotSent(err error) bool {
+	var target *reportNotSentError
+	return errors.As(err, &target)
 }

@@ -289,3 +289,38 @@ func TestWSClient_UserDeltaEvent(t *testing.T) {
 		t.Errorf("unexpected DeltaUsers: %+v", received[0].DeltaUsers)
 	}
 }
+
+func TestWSClient_EmptyFullUserSnapshotIsDelivered(t *testing.T) {
+	var received []WSEvent
+	ws := NewWSClient("ws://unused", "token", 1, WSClientConfig{}, func(event WSEvent) {
+		received = append(received, event)
+	}, nil, func() map[string]interface{} { return nil })
+
+	data, err := json.Marshal(syncUsersPayload{Users: []User{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ws.handleDataEvent(wsMessage{Event: WSEventSyncUsers, Data: data})
+
+	if len(received) != 1 {
+		t.Fatalf("received %d events, want 1", len(received))
+	}
+	if received[0].Type != WSEventSyncUsers {
+		t.Fatalf("event type = %q, want %q", received[0].Type, WSEventSyncUsers)
+	}
+	if received[0].Users == nil || len(received[0].Users) != 0 {
+		t.Fatalf("users = %#v, want non-nil empty snapshot", received[0].Users)
+	}
+}
+
+func TestWSClient_MissingFullUserSnapshotIsIgnored(t *testing.T) {
+	var received []WSEvent
+	ws := NewWSClient("ws://unused", "token", 1, WSClientConfig{}, func(event WSEvent) {
+		received = append(received, event)
+	}, nil, func() map[string]interface{} { return nil })
+
+	ws.handleDataEvent(wsMessage{Event: WSEventSyncUsers, Data: []byte(`{}`)})
+	if len(received) != 0 {
+		t.Fatalf("received %d events for missing users field, want 0", len(received))
+	}
+}

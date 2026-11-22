@@ -15,9 +15,9 @@ import (
 	"github.com/xtls/xray-core/common/protocol"
 	"github.com/xtls/xray-core/common/uuid"
 	xrayCore "github.com/xtls/xray-core/core"
+	featurebandwidth "github.com/xtls/xray-core/features/bandwidth"
 	"github.com/xtls/xray-core/features/inbound"
 	"github.com/xtls/xray-core/features/stats"
-	featurebandwidth "github.com/xtls/xray-core/features/bandwidth"
 	"github.com/xtls/xray-core/infra/conf/serial"
 	xrayProxy "github.com/xtls/xray-core/proxy"
 	"github.com/xtls/xray-core/proxy/shadowsocks"
@@ -32,8 +32,8 @@ import (
 	"github.com/cedar2025/xboard-node/internal/config"
 	"github.com/cedar2025/xboard-node/internal/kernel"
 	"github.com/cedar2025/xboard-node/internal/kernel/geodata"
-	"github.com/cedar2025/xboard-node/internal/nlog"
 	"github.com/cedar2025/xboard-node/internal/model"
+	"github.com/cedar2025/xboard-node/internal/nlog"
 )
 
 const (
@@ -57,17 +57,19 @@ type Xray struct {
 
 	// mu protects instance, limitDispatcher, users, protocol, inboundTag,
 	// lastKernelHash, and cumTraffic. Never held during slow I/O.
-	mu              sync.Mutex
-	instance        *xrayCore.Instance
-	limitDispatcher *LimitDispatcher
-	users           []model.UserSpec
-	nodeConfig      *model.NodeSpec
-	tls             kernel.TLSCert
-	protocol        string
-	inboundTag      string
-	lastKernelHash  string
-	cumTraffic      map[int][2]int64
-	speedLimitFunc  func(string) *rate.Limiter
+	mu               sync.Mutex
+	instance         *xrayCore.Instance
+	limitDispatcher  *LimitDispatcher
+	users            []model.UserSpec
+	nodeConfig       *model.NodeSpec
+	tls              kernel.TLSCert
+	protocol         string
+	inboundTag       string
+	lastKernelHash   string
+	cumTraffic       map[int][2]int64
+	speedLimitFunc   func(string) *rate.Limiter
+	admissionFunc    func(userID int, sourceIP string, limit int) (func(), bool)
+	deviceChangeFunc func()
 
 	// running is set after a successful Start and cleared before shutdown.
 	// Atomic so IsRunning / GetConnections never block.
@@ -97,7 +99,7 @@ func (x *Xray) Capabilities() kernel.Capabilities {
 func (x *Xray) Protocols() []string {
 	return []string{
 		"vmess", "vless", "trojan", "shadowsocks",
-		"hysteria",
+		"socks", "http", "hysteria",
 	}
 }
 
@@ -137,6 +139,30 @@ func (x *Xray) Start(nodeConfig *model.NodeSpec, users []model.UserSpec, tls ker
 		return fmt.Errorf("create xray: %w", err)
 	}
 
+	// Install user identities and the admission gate BEFORE starting listeners.
+	// Otherwise a connection arriving during instance.Start could bypass the
+	// machine-wide limit until Phase 4 has completed.
+	if ld != nil {
+		emailToUID := make(map[string]int, len(users)*2)
+		deviceLimits := make(map[string]int)
+		for _, u := range users {
+			email := userEmail(u.ID)
+			emailToUID[email] = u.ID
+			emailToUID[u.UUID] = u.ID
+			if u.DeviceLimit > 0 {
+				deviceLimits[email] = u.DeviceLimit
+				deviceLimits[u.UUID] = u.DeviceLimit
+			}
+		}
+		ld.UpdateLimits(emailToUID, deviceLimits, nil)
+		if x.admissionFunc != nil {
+			ld.SetAdmissionFunc(x.admissionFunc)
+		}
+		if x.deviceChangeFunc != nil {
+			ld.SetDeviceChangeFunc(x.deviceChangeFunc)
+		}
+	}
+
 	// ── Phase 3: Start new (no lock, potentially slow) ──────────────────
 	if err := startWithTimeout(inst, startTimeout); err != nil {
 		inst.Close()
@@ -154,7 +180,12 @@ func (x *Xray) Start(nodeConfig *model.NodeSpec, users []model.UserSpec, tls ker
 	x.tls = tls
 	x.protocol = nodeConfig.Protocol
 	x.inboundTag = nodeConfig.Protocol + "-in"
-	x.cumTraffic = make(map[int][2]int64)
+	// Preserve cumulative counters across full instance replacements.
+	// XBoard receives deltas from these values: resetting the map would
+	// make a successful restart look like a counter reset and risk double billing.
+	if x.cumTraffic == nil {
+		x.cumTraffic = make(map[int][2]int64)
+	}
 	x.lastKernelHash = kernel.ComputeHash(nodeConfig, users)
 	x.running.Store(true)
 	x.mu.Unlock()
@@ -163,6 +194,9 @@ func (x *Xray) Start(nodeConfig *model.NodeSpec, users []model.UserSpec, tls ker
 	closeOld(old, oldLD)
 
 	x.updateDispatcherLimits(users)
+	if x.admissionFunc != nil && ld != nil {
+		ld.SetAdmissionFunc(x.admissionFunc)
+	}
 	x.updateBandwidthLimits(users)
 
 	nlog.Core().Info("xray started",
@@ -269,11 +303,46 @@ func (x *Xray) SetSpeedLimitFunc(fn func(string) *rate.Limiter) {
 // gate-kept by LimitDispatcher.checkDeviceLimit at Dispatch time.
 func (x *Xray) SetDeviceLimitFunc(_ func(string) (int, bool)) {}
 
-// UpdateGlobalDevices is a no-op for xray — xray handles device limits differently.
-func (x *Xray) UpdateGlobalDevices(_ map[int][]string) {}
+// SetAdmissionFunc installs shared machine-mode device admission for Xray.
+func (x *Xray) SetAdmissionFunc(fn func(userID int, sourceIP string, limit int) (func(), bool)) {
+	x.mu.Lock()
+	x.admissionFunc = fn
+	ld := x.limitDispatcher
+	x.mu.Unlock()
+	if ld != nil {
+		ld.SetAdmissionFunc(fn)
+	}
+}
 
-// ClearGlobalDevices is a no-op for xray.
-func (x *Xray) ClearGlobalDevices() {}
+// SetDeviceChangeFunc provides immediate connection-change notifications.
+func (x *Xray) SetDeviceChangeFunc(fn func()) {
+	x.mu.Lock()
+	x.deviceChangeFunc = fn
+	ld := x.limitDispatcher
+	x.mu.Unlock()
+	if ld != nil {
+		ld.SetDeviceChangeFunc(fn)
+	}
+}
+
+// UpdateGlobalDevices forwards panel snapshots to the active dispatcher.
+func (x *Xray) UpdateGlobalDevices(users map[int][]string) {
+	x.mu.Lock()
+	ld := x.limitDispatcher
+	x.mu.Unlock()
+	if ld != nil {
+		ld.UpdateGlobalDevices(users)
+	}
+}
+
+func (x *Xray) ClearGlobalDevices() {
+	x.mu.Lock()
+	ld := x.limitDispatcher
+	x.mu.Unlock()
+	if ld != nil {
+		ld.ClearGlobalDevices()
+	}
+}
 
 // ─── User management (non-disruptive where possible) ────────────────────────
 
@@ -314,7 +383,7 @@ func (x *Xray) AddUsers(users []model.UserSpec) (int, error) {
 		x.users = merged
 		x.mu.Unlock()
 		x.updateDispatcherLimits(merged)
-	x.updateBandwidthLimits(merged)
+		x.updateBandwidthLimits(merged)
 		return 0, nil
 	}
 
@@ -703,6 +772,19 @@ func drainConns(ld *LimitDispatcher, timeout time.Duration) {
 	}
 }
 
+// statsIdentity returns the identity attached to Xray's authenticated
+// inbound session. SOCKS and HTTP use the login username (UUID) as
+// session.Inbound.User.Email, not the extra account email field.
+// Other protocols use the configured user@ID.
+func statsIdentity(protocol string, u model.UserSpec) string {
+	switch protocol {
+	case "socks", "http":
+		return u.UUID
+	default:
+		return userEmail(u.ID)
+	}
+}
+
 // aggregateStats is a fallback path that reads xray's built-in stats counters
 // when LimitDispatcher is not available. Returns per-user cumulative traffic.
 // Must be called with x.mu held.
@@ -718,7 +800,7 @@ func (x *Xray) aggregateStats() (map[int][2]int64, error) {
 
 	traffic := make(map[int][2]int64)
 	for _, u := range x.users {
-		email := userEmail(u.ID)
+		email := statsIdentity(x.protocol, u)
 
 		var dUp, dDown int64
 		if c := mgr.GetCounter(fmt.Sprintf("user>>>%s>>>traffic>>>uplink", email)); c != nil {

@@ -117,8 +117,32 @@ func collectNetSpeed() (inSpeed, outSpeed float64) {
 	return inSpeed, outSpeed
 }
 
-// Collect gathers current system metrics
+// All node services run in the same process and report the same host metrics.
+// Share a short-lived sample instead of repeatedly scanning procfs and taking
+// a runtime memory snapshot once per node during a synchronized reporting tick.
+var hostSample struct {
+	sync.Mutex
+	at     time.Time
+	status Status
+}
+
+const hostSampleTTL = 2 * time.Second
+
+// Collect gathers current system metrics, coalescing concurrent node reports.
+// The returned per-core slice is copied so callers cannot mutate cached data.
 func Collect() Status {
+	hostSample.Lock()
+	defer hostSample.Unlock()
+	if hostSample.at.IsZero() || time.Since(hostSample.at) >= hostSampleTTL {
+		hostSample.status = collectHost()
+		hostSample.at = time.Now()
+	}
+	s := hostSample.status
+	s.CPUPerCore = append([]float64(nil), s.CPUPerCore...)
+	return s
+}
+
+func collectHost() Status {
 	var s Status
 
 	s.Uptime = uint64(time.Since(startTime).Seconds())

@@ -572,3 +572,55 @@ func TestExtractECHServerKeys(t *testing.T) {
 		})
 	}
 }
+
+func TestTCPHeaderAndSocksTLSConfig(t *testing.T) {
+	node := &model.NodeSpec{Protocol: "vmess", Network: "tcp", NetworkSettings: map[string]any{"header": map[string]any{"type": "http"}}}
+	inbound := buildInbound(node, testUsers, kernel.TLSCert{})
+	header := inbound["streamSettings"].(M)["tcpSettings"].(M)["header"].(M)
+	if header["type"] != "http" {
+		t.Fatal("TCP header missing")
+	}
+	node = &model.NodeSpec{Protocol: "socks", TLS: 1}
+	inbound = buildInbound(node, testUsers, kernel.TLSCert{CertPEM: []byte("cert"), KeyPEM: []byte("key")})
+	if inbound["streamSettings"].(M)["security"] != "tls" || inbound["settings"].(M)["udp"] != false {
+		t.Fatal("SOCKS TLS must enable TLS and disable unencrypted UDP")
+	}
+}
+
+// Check that the Xray configuration path actually builds a TLS-enabled SOCKS5
+// inbound with supplied certificate material, not only a capability label.
+func TestBuildConfig_SocksTLSCertificate(t *testing.T) {
+	node := &model.NodeSpec{
+		Protocol:   "socks",
+		ServerPort: 7334,
+		TLS:        1,
+		ServerName: "example.com",
+	}
+	cfg := buildConfig(testKernelCfg, node, testUsers, kernel.TLSCert{
+		CertPEM: []byte("TEST_CERT"),
+		KeyPEM:  []byte("TEST_KEY"),
+	})
+	inbounds, ok := cfg["inbounds"].([]M)
+	if !ok || len(inbounds) != 1 {
+		t.Fatalf("expected one SOCKS inbound: %v", cfg["inbounds"])
+	}
+	inbound := inbounds[0]
+	if inbound["protocol"] != "socks" || inbound["port"] != 7334 {
+		t.Fatalf("unexpected SOCKS inbound: %v", inbound)
+	}
+	settings, ok := inbound["streamSettings"].(M)
+	if !ok || settings["security"] != "tls" {
+		t.Fatalf("SOCKS5 TLS stream settings missing: %v", inbound["streamSettings"])
+	}
+	tls, ok := settings["tlsSettings"].(M)
+	if !ok || tls["serverName"] != "example.com" {
+		t.Fatalf("SOCKS5 TLS server name missing: %v", settings["tlsSettings"])
+	}
+	certificates, ok := tls["certificates"].([]M)
+	if !ok || len(certificates) != 1 {
+		t.Fatalf("SOCKS5 TLS certificate missing: %v", tls["certificates"])
+	}
+	if got := certificates[0]["certificate"]; len(got.([]string)) != 1 || got.([]string)[0] != "TEST_CERT" {
+		t.Fatalf("SOCKS5 TLS certificate material not used")
+	}
+}

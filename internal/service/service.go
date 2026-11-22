@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -26,18 +27,25 @@ import (
 	"github.com/cedar2025/xboard-node/internal/model"
 	"github.com/cedar2025/xboard-node/internal/monitor"
 	"github.com/cedar2025/xboard-node/internal/nlog"
+	"github.com/cedar2025/xboard-node/internal/panel"
+	"github.com/cedar2025/xboard-node/internal/reportjournal"
 	"github.com/cedar2025/xboard-node/internal/tracker"
 )
 
 type Service struct {
-	cfg          *config.Config
-	source       controlplane.Source
-	sink         controlplane.Sink
-	kernel       kernel.Kernel
-	tracker      *tracker.Tracker
-	limiter      *limiter.Limiter
-	speedTracker *limiter.SpeedTracker
-	cert         *cert.Manager
+	cfg     *config.Config
+	source  controlplane.Source
+	sink    controlplane.Sink
+	kernel  kernel.Kernel
+	tracker *tracker.Tracker
+	// Enabled only when the panel advertises durable report-ID deduplication.
+	reportJournal *reportjournal.Journal
+	deviceState   *deviceReportState
+	limiter       *limiter.Limiter
+	speedTracker  *limiter.SpeedTracker
+	cert          *cert.Manager
+
+	certApplyFailed bool // main-loop owned; do not serve TLS with stale or absent material
 
 	lastConfig *model.NodeSpec
 	lastUsers  []model.UserSpec
@@ -63,9 +71,12 @@ type Service struct {
 
 	// pushActive prevents overlapping push/pull goroutines.
 	pushActive atomic.Bool
+	pushWG     sync.WaitGroup // ensure asynchronous reports finish before final shutdown flush
 	pullActive atomic.Bool
 	// pullResults delivers async pullViaAPI results back to the main goroutine.
 	pullResults chan pullResult
+	// Buffered edge-trigger: kernel connection goroutines never block on WS/network.
+	deviceChanges chan struct{}
 
 	wsClient         controlplane.PushClient        // Push client (nil if push is not enabled)
 	wsEvents         chan controlplane.Event        // receives data events from push transport
@@ -82,12 +93,15 @@ type Service struct {
 
 // pullResult carries the outcome of an async pullViaAPI back to the main goroutine.
 type pullResult struct {
+	deviceUsers map[int][]string
 	config      *model.NodeSpec
 	users       []model.UserSpec
 	configHash  string
 	userHash    string
 	certChanged bool
 }
+
+const certificateRecoveryInterval = 15 * time.Second
 
 // apiBackoff implements simple exponential backoff for API failures.
 type apiBackoff struct {
@@ -131,6 +145,16 @@ func New(cfg *config.Config) *Service {
 	return newService(cfg, cp)
 }
 
+// SetAdmissionFunc wires the shared per-machine admission authority before Run.
+// Standalone services are unchanged unless explicitly configured.
+func (s *Service) SetAdmissionFunc(fn func(userID int, sourceIP string, limit int) (func(), bool)) {
+	if k, ok := s.kernel.(interface {
+		SetAdmissionFunc(func(userID int, sourceIP string, limit int) (func(), bool))
+	}); ok {
+		k.SetAdmissionFunc(fn)
+	}
+}
+
 // NewWithControlPlane creates a Service with an externally-provided
 // ControlPlane. Used by the machine orchestrator to inject a
 // MachinePanelControlPlane with WS mux routing.
@@ -156,32 +180,60 @@ func newService(cfg *config.Config, cp controlplane.ControlPlane) *Service {
 	st := limiter.NewSpeedTracker(l)
 
 	return &Service{
-		cfg:          cfg,
-		source:       cp,
-		sink:         cp,
-		kernel:       k,
-		tracker:      tracker.New(),
-		limiter:      l,
-		speedTracker: st,
-		cert:         certMgr,
-		wsEvents:     make(chan controlplane.Event, 16),
-		wsStatusCh:   make(chan controlplane.StatusChange, 4),
-		pullResults:  make(chan pullResult, 1),
+		cfg:           cfg,
+		source:        cp,
+		sink:          cp,
+		kernel:        k,
+		tracker:       tracker.New(),
+		limiter:       l,
+		speedTracker:  st,
+		cert:          certMgr,
+		wsEvents:      make(chan controlplane.Event, 16),
+		wsStatusCh:    make(chan controlplane.StatusChange, 4),
+		pullResults:   make(chan pullResult, 1),
+		deviceChanges: make(chan struct{}, 1),
 	}
 }
 
 func (s *Service) Run(ctx context.Context) error {
 	// Start cert manager (handles auto-TLS or manual cert verification)
 	if err := s.cert.Start(ctx); err != nil {
-		return fmt.Errorf("cert manager: %w", err)
+		// A temporary ACME/DNS/file failure must not turn a TLS node into a
+		// process crash loop.  Keep the listener disabled and let the main loop
+		// retry; startKernel and canServeTLS make the no-certificate state
+		// fail closed.
+		s.certApplyFailed = true
+		nlog.Core().Error("cert manager unavailable; TLS listener disabled until recovery", "error", err)
 	}
 	defer s.cert.Stop()
+
+	// Load per-node device recovery state before accepting connections.
+	if s.sink.SupportsReporting() && s.cfg.Kernel.ConfigDir != "" {
+		state, err := openDeviceReportState(s.cfg)
+		if err != nil {
+			return fmt.Errorf("open device recovery state: %w", err)
+		}
+		s.deviceState = state
+		s.tracker.RestoreAliveIPs(state.snapshot())
+		if len(state.users) > 0 {
+			nlog.Core().Info("device recovery loaded", "users", len(state.users), "node_id", s.cfg.Panel.NodeID)
+		}
+	}
 
 	// Handshake: get WS config + initial data in one call
 	if err := s.initialSetup(ctx); err != nil {
 		return fmt.Errorf("initial setup: %w", err)
 	}
-	defer s.kernel.Stop()
+	kernelStopped := false
+	defer func() {
+		if !kernelStopped {
+			s.kernel.Stop()
+		}
+	}()
+
+	// Surface unresolved billing records on restart. We deliberately
+	// never auto-replay them against a non-idempotent legacy panel.
+	s.warnUnconfirmedReports()
 
 	// Set up tickers
 	trackTicker := time.NewTicker(time.Duration(s.cfg.Node.TrackInterval) * time.Second)
@@ -190,6 +242,13 @@ func (s *Service) Run(ctx context.Context) error {
 	reportTicker := time.NewTicker(pushInterval)
 	pullTicker := time.NewTicker(pullInterval)
 	deviceReportTicker := time.NewTicker(time.Duration(s.cfg.Node.DeviceReportInterval) * time.Second)
+	// Coalesce high-frequency connection churn without delaying indefinitely.
+	deviceEventTimer := time.NewTimer(time.Hour)
+	if !deviceEventTimer.Stop() {
+		<-deviceEventTimer.C
+	}
+	deviceEventPending := false
+	certRecoveryTicker := time.NewTicker(certificateRecoveryInterval)
 
 	// WS discovery: when in REST-only mode, periodically re-handshake to check
 	// if WS has been enabled. When WS is disconnected for too long, re-check
@@ -200,6 +259,8 @@ func (s *Service) Run(ctx context.Context) error {
 	defer reportTicker.Stop()
 	defer pullTicker.Stop()
 	defer deviceReportTicker.Stop()
+	defer deviceEventTimer.Stop()
+	defer certRecoveryTicker.Stop()
 	defer wsDiscoveryTicker.Stop()
 
 	s.startWSClient(ctx)
@@ -207,6 +268,19 @@ func (s *Service) Run(ctx context.Context) error {
 	for {
 		select {
 		case <-ctx.Done():
+			// Capture the final bytes even when cancellation arrives between
+			// periodic tracking ticks. The kernel is still running here.
+			finalCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			s.trackAndEnforce(finalCtx)
+			cancel()
+			// Wait for an in-flight report to finish restoring failed deltas
+			// before draining the final buffer, preventing lost accounting.
+			s.pushWG.Wait()
+			// Stop accepting connections before publishing the final offline
+			// snapshot. Keep the previously collected traffic deltas intact.
+			s.kernel.Stop()
+			kernelStopped = true
+			s.tracker.ClearLiveDevices()
 			s.pushReportSync()
 			return nil
 
@@ -218,6 +292,21 @@ func (s *Service) Run(ctx context.Context) error {
 
 		case <-deviceReportTicker.C:
 			s.reportDevices()
+
+		case <-s.deviceChanges:
+			if !deviceEventPending {
+				deviceEventPending = true
+				deviceEventTimer.Reset(350 * time.Millisecond)
+			}
+
+		case <-deviceEventTimer.C:
+			deviceEventPending = false
+			// Refresh online IPs without flushing or changing billing deltas.
+			s.trackAndEnforce(ctx)
+			s.sendDeviceBatch()
+
+		case <-certRecoveryTicker.C:
+			s.handleCertificateState(ctx)
 
 		case <-pullTicker.C:
 			// When WebSocket is connected, skip REST polling entirely.
@@ -250,10 +339,23 @@ func (s *Service) initialSetup(ctx context.Context) error {
 	// Register speed limit lookup with kernel unconditionally (before push/poll branch).
 	s.kernel.SetSpeedLimitFunc(s.speedTracker.GetLimiter)
 	s.kernel.SetDeviceLimitFunc(s.limiter.GetDeviceLimitByUUID)
+	if notifying, ok := s.kernel.(interface{ SetDeviceChangeFunc(func()) }); ok {
+		notifying.SetDeviceChangeFunc(s.signalDeviceChange)
+	}
 
 	bootstrap, err := s.source.Initial(ctx, s.wsMetrics, s.wsEvents, s.wsStatusCh)
 	if err != nil {
 		return err
+	}
+	if bootstrap.IdempotentReports && s.sink.SupportsReporting() {
+		if s.cfg.Kernel.ConfigDir == "" {
+			return fmt.Errorf("panel requires idempotent billing but kernel.config_dir is empty")
+		}
+		journal, journalErr := reportjournal.Open(filepath.Join(s.cfg.Kernel.ConfigDir, "idempotent-reports"))
+		if journalErr != nil {
+			return fmt.Errorf("open durable idempotent billing journal: %w", journalErr)
+		}
+		s.reportJournal = journal
 	}
 
 	if s.cfg.Node.PushInterval == 0 && bootstrap.PushInterval > 0 {
@@ -291,7 +393,15 @@ func (s *Service) initialSetup(ctx context.Context) error {
 		return fmt.Errorf("initial config is nil")
 	}
 	if err := validateNodeRuntime(s.cfg, s.kernel.Protocols(), bootstrap.Config, s.cert.TLSCert()); err != nil {
-		return err
+		// The protocol and its non-certificate settings are still validated.
+		// Only the temporary missing-material error is deferred so the service
+		// can recover after ACME/file material becomes available.
+		pendingCert := s.certApplyFailed && requiresCertificate(bootstrap.Config) &&
+			!s.cert.HasCert() && strings.HasSuffix(err.Error(), "requires TLS certificate files")
+		if !pendingCert {
+			return err
+		}
+		nlog.Core().Warn("initial TLS listener deferred until certificate recovery", "error", err)
 	}
 
 	s.metricsMu.Lock()
@@ -314,7 +424,15 @@ func (s *Service) initialSetup(ctx context.Context) error {
 
 	s.applyRemoteOverrides(ctx, bootstrap.Config)
 	if !s.startKernel(bootstrap.Config, bootstrap.Users) {
+		if requiresCertificate(bootstrap.Config) && !s.cert.HasCert() {
+			nlog.Core().Warn("initial TLS listener disabled until certificate recovery")
+			s.markMailboxReadyAndDrain(ctx)
+			return nil
+		}
 		return fmt.Errorf("start kernel")
+	}
+	if bootstrap.DeviceUsers != nil && (s.wsClient == nil || !s.wsClient.IsConnected()) {
+		s.kernel.UpdateGlobalDevices(bootstrap.DeviceUsers)
 	}
 	s.markMailboxReadyAndDrain(ctx)
 	return nil
@@ -335,6 +453,10 @@ func (s *Service) applyRemoteOverrides(ctx context.Context, nc *model.NodeSpec) 
 
 	// Certificate configuration from panel (panel-first: takes precedence over local config)
 	if nc.CertConfig != nil {
+		// Stop a previously cleartext listener before attempting a TLS upgrade.
+		if requiresCertificate(nc) && !requiresCertificate(s.appliedConfig()) && s.kernel.IsRunning() {
+			s.stopForTLS(ctx)
+		}
 		return s.applyNodeCert(ctx, nc.CertConfig)
 	}
 
@@ -358,8 +480,10 @@ func (s *Service) applyNodeCert(ctx context.Context, newCfg *config.CertConfig) 
 	}
 	cfgCopy := *newCfg
 	cfgCopy.CertDir = s.cfg.Cert.CertDir
+	cfgCopy.ACMEStorageDir = s.cfg.Cert.ACMEStorageDir
 
 	changed, err := s.cert.Reconfigure(ctx, cfgCopy)
+	s.certApplyFailed = err != nil
 	if err != nil {
 		nlog.Core().Error("failed to apply runtime cert config", "mode", cfgCopy.CertMode, "error", err)
 		return false
@@ -374,6 +498,53 @@ func (s *Service) applyNodeCert(ctx context.Context, newCfg *config.CertConfig) 
 		}
 	}
 	return changed
+}
+
+// handleCertificateState is the main-loop owner of certificate recovery.
+// ACME renewal callbacks atomically refresh Manager material and set the
+// renewed flag.  A recovery retry can also populate material after a
+// transient startup or runtime failure.  In both cases the kernel must be
+// restarted/reloaded with the new PEM before TLS traffic is accepted.
+func (s *Service) handleCertificateState(ctx context.Context) {
+	if s.cert == nil {
+		return
+	}
+
+	renewed := s.cert.CertRenewed()
+	sharedChanged, err := s.cert.RefreshSharedCertificate(ctx)
+	if err != nil {
+		nlog.Core().Debug("shared certificate refresh failed", "error", err)
+	}
+	renewed = renewed || sharedChanged
+	// Certificate validity can change while the process runs. A certificate
+	// that expired or became invalid must fail closed, not leave an existing
+	// TLS listener running until another panel config update arrives.
+	if s.lastConfig != nil && requiresCertificate(s.lastConfig) && !s.cert.HasCert() {
+		s.stopForTLS(ctx)
+	}
+	recovered := false
+	if s.certApplyFailed || (s.lastConfig != nil && requiresCertificate(s.lastConfig) && !s.cert.HasCert()) {
+		if err := s.cert.Start(ctx); err != nil {
+			nlog.Core().Debug("certificate recovery retry failed", "error", err)
+			return
+		}
+		s.certApplyFailed = false
+		recovered = true
+	}
+	if !renewed && !recovered {
+		return
+	}
+	if s.lastConfig == nil || len(s.lastUsers) == 0 || !s.canServeTLS(s.lastConfig) {
+		return
+	}
+
+	if s.kernel.IsRunning() {
+		// applyChanges deliberately snapshots traffic before replacing the TLS
+		// listener, preserving accounting across a certificate hot reload.
+		s.applyChanges(ctx, true, false)
+	} else if !s.startKernel(s.lastConfig, s.lastUsers) {
+		nlog.Core().Warn("certificate recovered but listener restart failed")
+	}
 }
 
 // startWSClient starts the push client goroutine if a client is configured.
@@ -611,7 +782,8 @@ func (s *Service) pullViaAPIAsync(ctx context.Context) {
 	}
 
 	currentConfigHash := s.lastConfigHash
-	certChanged := s.cert.CertRenewed()
+	// Certificate recovery ticker owns renewal notifications.
+	certChanged := false
 
 	go func() {
 		defer s.pullActive.Store(false)
@@ -623,7 +795,7 @@ func (s *Service) pullViaAPIAsync(ctx context.Context) {
 		}
 		s.pullBackoff.onSuccess()
 
-		result := pullResult{certChanged: certChanged}
+		result := pullResult{certChanged: certChanged, deviceUsers: snapshot.DeviceUsers}
 		if snapshot.Config != nil {
 			result.config = snapshot.Config
 			result.configHash = computeConfigHash(snapshot.Config)
@@ -687,6 +859,10 @@ func (s *Service) applyPullResult(ctx context.Context, result pullResult) {
 	if configChanged {
 		s.applyChanges(ctx, true, false)
 	}
+	// A late REST result must not overwrite a connected WS snapshot.
+	if result.deviceUsers != nil && (s.wsClient == nil || !s.wsClient.IsConnected()) {
+		s.kernel.UpdateGlobalDevices(result.deviceUsers)
+	}
 }
 
 // ─── User state helpers ─────────────────────────────────────────────────────
@@ -733,6 +909,10 @@ func (s *Service) restoreUserState(users []model.UserSpec, hash string) {
 // startKernel starts (or restarts) the kernel with the given config/users and
 // records the successfully applied state. Returns false on error.
 func (s *Service) startKernel(nc *model.NodeSpec, users []model.UserSpec) bool {
+	if !s.canServeTLS(nc) {
+		s.stopForTLS(context.Background())
+		return false
+	}
 	if err := s.kernel.Start(nc, users, s.cert.TLSCert()); err != nil {
 		nlog.Core().Error("failed to start kernel", "error", err)
 		return false
@@ -793,6 +973,9 @@ func (s *Service) applyUserUpdate(ctx context.Context, users []model.UserSpec, n
 		return
 	}
 
+	// Capture counters while the old identities are still registered.
+	// Otherwise removing users can drop their last unreported bytes.
+	s.trackAndEnforce(ctx)
 	prevUsers, prevHash := s.prepareUserState(users)
 	added, removed, err := s.kernel.UpdateUsers(users)
 	if err != nil {
@@ -834,6 +1017,8 @@ func (s *Service) applyUserDelta(ctx context.Context, action string, deltaUsers 
 			}
 		}
 
+		// Count traffic before the user map changes, including replaced UUIDs.
+		s.trackAndEnforce(ctx)
 		prevUsers, prevHash := s.prepareUserState(merged)
 		added, err := s.kernel.AddUsers(deltaUsers)
 		if err != nil {
@@ -859,6 +1044,8 @@ func (s *Service) applyUserDelta(ctx context.Context, action string, deltaUsers 
 			return
 		}
 
+		// The kernel may discard counters for users when they are removed.
+		s.trackAndEnforce(ctx)
 		prevUsers, prevHash := s.prepareUserState(filtered)
 		removed, err := s.kernel.RemoveUsers(deltaUsers)
 		if err != nil {
@@ -931,11 +1118,19 @@ func (s *Service) applyChanges(ctx context.Context, configChanged, usersChanged 
 		return
 	}
 
+	// Snapshot the old kernel counters before a reload/reconstruction.
+	// Sampling after Reload can lose trailing traffic or see reset counters.
+	s.trackAndEnforce(ctx)
 	if s.lastConfig == nil || len(s.lastUsers) == 0 {
 		if len(s.lastUsers) == 0 {
 			s.kernel.Stop()
 			s.clearAppliedState()
 		}
+		return
+	}
+
+	if !s.canServeTLS(s.lastConfig) {
+		s.stopForTLS(ctx)
 		return
 	}
 
@@ -954,6 +1149,37 @@ func (s *Service) applyChanges(ctx context.Context, configChanged, usersChanged 
 	} else if !s.kernel.IsRunning() {
 		s.startKernel(s.lastConfig, s.lastUsers)
 	}
+}
+
+// requiresCertificate distinguishes certificate TLS from REALITY.
+func requiresCertificate(spec *model.NodeSpec) bool {
+	if spec == nil {
+		return false
+	}
+	if spec.TLS == 1 {
+		return true
+	}
+	switch spec.Protocol {
+	case "hysteria", "hysteria2", "tuic", "anytls":
+		return true
+	case "trojan":
+		return spec.TLS != 2
+	}
+	return false
+}
+
+func (s *Service) canServeTLS(spec *model.NodeSpec) bool {
+	return !requiresCertificate(spec) || (!s.certApplyFailed && s.cert.TLSCert().HasCert())
+}
+
+func (s *Service) stopForTLS(ctx context.Context) {
+	if s.kernel.IsRunning() {
+		s.trackAndEnforce(ctx)
+		s.kernel.Stop()
+		s.tracker.ClearLiveDevices()
+	}
+	s.clearAppliedState()
+	nlog.Core().Warn("TLS certificate unavailable or configuration pending; listener disabled")
 }
 
 func (s *Service) trackAndEnforce(ctx context.Context) {
@@ -979,6 +1205,127 @@ func (s *Service) trackAndEnforce(ctx context.Context) {
 	}
 }
 
+// reportWithJournal stores every raw-traffic delta before contacting a panel
+// that explicitly advertised idempotent report IDs. Replaying a pending batch
+// always reuses its original ID, so lost HTTP replies cannot double-charge
+// on a correctly implemented server.
+func (s *Service) reportWithJournal(payload controlplane.ReportPayload) error {
+	if s.reportJournal == nil {
+		return fmt.Errorf("idempotent report journal is not initialized")
+	}
+	if len(payload.Traffic) > 0 {
+		stored, err := s.reportJournal.Append(payload.Traffic)
+		if err != nil {
+			// Append returns a non-empty ID if rename succeeded but the
+			// directory sync failed. Such a file may exist on disk; do not
+			// restore the same bytes into a second batch in that case.
+			if stored.ID == "" {
+				s.tracker.RestoreTraffic(payload.Traffic)
+			}
+			return fmt.Errorf("persist report batch: %w", err)
+		}
+	}
+	pending, err := s.reportJournal.Pending()
+	if err != nil {
+		return fmt.Errorf("read persisted report batches: %w", err)
+	}
+	// Bound work on each reporting tick. A large backlog is retried over
+	// subsequent ticks without blocking kernel tracking for minutes.
+	count := len(pending)
+	if count > 4 {
+		count = 4
+	}
+	for _, batch := range pending[:count] {
+		attempt := payload
+		attempt.BatchID = batch.ID
+		attempt.Traffic = batch.Traffic
+		if err := s.sink.Report(attempt); err != nil {
+			return fmt.Errorf("batch %s: %w", batch.ID, err)
+		}
+		if err := s.reportJournal.Acknowledge(batch.ID); err != nil {
+			return fmt.Errorf("acknowledge batch %s: %w", batch.ID, err)
+		}
+	}
+	// A deduplicated billing receipt must not be the sole confirmation of
+	// a fresh device snapshot. Send it without a billing ID as well.
+	// Preserve the existing bounded traffic-only backlog behavior.
+	if len(pending) == 0 || len(payload.Alive) > 0 {
+		payload.BatchID = ""
+		payload.Traffic = nil
+		return s.sink.Report(payload)
+	}
+	return nil
+}
+
+// reportLogger uses the applied runtime rather than a pending config and
+// returns immutable context safe to use from the report goroutine.
+func (s *Service) reportLogger() (*nlog.NodeLog, int, int) {
+	nodeID, machineID := 0, 0
+	if s.cfg != nil {
+		nodeID, machineID = s.cfg.Panel.NodeID, s.cfg.Panel.MachineID
+	}
+	if applied := s.appliedConfig(); applied != nil {
+		return nlog.ForNode(applied.Protocol, applied.ServerPort), nodeID, machineID
+	}
+	return nlog.Core(), nodeID, machineID
+}
+
+// reportTrafficTotals summarizes raw bytes without changing billing payloads.
+func reportTrafficTotals(traffic map[int][2]int64) (up, down uint64) {
+	for _, delta := range traffic {
+		if delta[0] > 0 {
+			up += uint64(delta[0])
+		}
+		if delta[1] > 0 {
+			down += uint64(delta[1])
+		}
+	}
+	return
+}
+
+// reportLegacy records the attempted delta before sending it. Without
+// a deduplicating receipt, a failure cannot safely be retried automatically.
+// The local record is for operator reconciliation, never automatic replay.
+func (s *Service) reportLegacy(payload controlplane.ReportPayload) error {
+	if len(payload.Traffic) == 0 {
+		if err := s.sink.Report(payload); err != nil {
+			return err
+		}
+		return s.retryLegacyUnsent(payload)
+	}
+	if s.cfg == nil || s.cfg.Kernel.ConfigDir == "" {
+		s.tracker.RestoreTraffic(payload.Traffic)
+		return fmt.Errorf("legacy traffic reporting requires a writable kernel.config_dir")
+	}
+	j, err := reportjournal.Open(filepath.Join(s.cfg.Kernel.ConfigDir, "unconfirmed-reports"))
+	if err != nil {
+		s.tracker.RestoreTraffic(payload.Traffic)
+		return fmt.Errorf("open legacy report audit: %w", err)
+	}
+	batch, err := j.Append(payload.Traffic)
+	if err != nil {
+		if batch.ID == "" {
+			s.tracker.RestoreTraffic(payload.Traffic)
+		}
+		return fmt.Errorf("persist legacy report audit: %w", err)
+	}
+	if err := s.sink.Report(payload); err != nil {
+		if panel.IsReportNotSent(err) {
+			if markErr := j.MarkLegacyRetryable(batch.ID); markErr != nil {
+				return fmt.Errorf("legacy batch %s retry transition failed: %w", batch.ID, markErr)
+			}
+			return fmt.Errorf("legacy batch %s proven unsent; queued for safe retry: %w", batch.ID, err)
+		}
+		return fmt.Errorf("legacy batch %s retained for manual reconciliation: %w", batch.ID, err)
+	}
+	// The legacy API reported success. This is NOT an idempotent receipt;
+	// if removal fails, leave the audit record for manual reconciliation.
+	if err := j.RemoveLegacyAudit(batch.ID); err != nil {
+		return fmt.Errorf("legacy batch %s reported success but audit cleanup failed: %w", batch.ID, err)
+	}
+	return s.retryLegacyUnsent(payload)
+}
+
 // pushReportAsync sends the report in a background goroutine so the select
 // loop is never blocked by slow HTTP. Only one push runs at a time.
 func (s *Service) pushReportAsync() {
@@ -995,29 +1342,81 @@ func (s *Service) pushReportAsync() {
 		return
 	}
 
-	traffic := s.tracker.FlushTraffic()
 	aliveIPs := s.tracker.FlushAliveIPs()
+	if err := s.persistDeviceAttempt(aliveIPs); err != nil {
+		nlog.Core().Error("cannot persist device report; retrying on next tick", "error", err)
+		s.pushActive.Store(false)
+		return
+	}
+	traffic := s.tracker.FlushTraffic()
 	online := s.tracker.CurrentOnline()
+	for uid, ips := range aliveIPs {
+		online[uid] = len(ips)
+	}
 	status := monitor.Collect()
 	metrics := s.buildMetrics(status)
 	metrics["kernel_status"] = s.kernel.IsRunning()
 
+	reportLog, nodeID, machineID := s.reportLogger()
+	activeDevices, offlineUsers := deviceReportCounts(aliveIPs)
+	started := time.Now()
+	s.pushWG.Add(1)
 	go func() {
+		defer s.pushWG.Done()
 		defer s.pushActive.Store(false)
-		if err := s.sink.Report(controlplane.ReportPayload{Traffic: traffic, Alive: aliveIPs, Online: online, CPU: status.CPU, Mem: [2]uint64{status.MemTotal, status.MemUsed}, Swap: [2]uint64{status.SwapTotal, status.SwapUsed}, Disk: [2]uint64{status.DiskTotal, status.DiskUsed}, Metrics: metrics}); err != nil {
-			nlog.Core().Warn("failed to push report", "error", err)
-			if len(traffic) > 0 {
-				s.tracker.RestoreTraffic(traffic)
-			}
+		payload := controlplane.ReportPayload{Traffic: traffic, Alive: aliveIPs, Online: online, CPU: status.CPU, Mem: [2]uint64{status.MemTotal, status.MemUsed}, Swap: [2]uint64{status.SwapTotal, status.SwapUsed}, Disk: [2]uint64{status.DiskTotal, status.DiskUsed}, Metrics: metrics}
+		var err error
+		if s.reportJournal != nil {
+			err = s.reportWithJournal(payload)
+		} else {
+			err = s.reportLegacy(payload)
+		}
+		if err != nil {
+			reportLog.Warn("failed to push report", "node_id", nodeID, "machine_id", machineID, "device_report_users", len(aliveIPs), "device_report_ips", activeDevices, "device_offline_users", offlineUsers, "duration_ms", time.Since(started).Milliseconds(), "error", err)
 			if len(aliveIPs) > 0 {
 				s.tracker.RestoreAliveIPs(aliveIPs)
 			}
 			s.pushBackoff.onFailure()
 			return
 		}
+		s.confirmDeviceAttempt(aliveIPs)
+		if len(aliveIPs) > 0 {
+			reportLog.Info("device report confirmed", "node_id", nodeID, "machine_id", machineID, "device_report_users", len(aliveIPs), "device_report_ips", activeDevices, "device_offline_users", offlineUsers, "duration_ms", time.Since(started).Milliseconds())
+		}
 		s.pushBackoff.onSuccess()
-		nlog.ReportPushed(len(traffic), len(online))
+		if s.reportJournal != nil {
+			// A successful journal tick can include older batches and leave
+			// newer batches pending; do not label freshly collected bytes as sent.
+			reportLog.Info("journal report tick succeeded", "node_id", nodeID, "machine_id", machineID, "online", len(s.tracker.CurrentOnline()))
+		} else {
+			up, down := reportTrafficTotals(traffic)
+			reportLog.Info("report pushed", "node_id", nodeID, "machine_id", machineID, "traffic_users", len(traffic), "online", len(s.tracker.CurrentOnline()), "upload_bytes", up, "download_bytes", down)
+		}
 	}()
+}
+
+// warnUnconfirmedReports highlights ambiguous previous shutdown reports.
+// They may or may not have been charged by XBoard and require operator
+// reconciliation until the panel provides atomic report-ID deduplication.
+func (s *Service) warnUnconfirmedReports() {
+	if s.cfg == nil || s.cfg.Kernel.ConfigDir == "" || !s.sink.SupportsReporting() {
+		return
+	}
+	path := filepath.Join(s.cfg.Kernel.ConfigDir, "unconfirmed-reports")
+	j, err := reportjournal.Open(path)
+	if err != nil {
+		nlog.Core().Error("cannot open local unconfirmed report journal", "error", err)
+		return
+	}
+	batches, err := j.Pending()
+	if err != nil {
+		nlog.Core().Error("corrupt or unreadable unconfirmed reports; manual repair required", "error", err, "path", path)
+		return
+	}
+	if len(batches) > 0 {
+		nlog.Core().Warn("unconfirmed traffic reports from previous runs require manual billing reconciliation; automatic replay disabled",
+			"count", len(batches), "path", path)
+	}
 }
 
 // pushReportSync is used only during shutdown to ensure final data is sent.
@@ -1025,16 +1424,52 @@ func (s *Service) pushReportSync() {
 	if !s.sink.SupportsReporting() {
 		return
 	}
-	traffic := s.tracker.FlushTraffic()
 	aliveIPs := s.tracker.FlushAliveIPs()
+	if err := s.persistDeviceAttempt(aliveIPs); err != nil {
+		// Still preserve final traffic accounting; no untracked device send.
+		nlog.Core().Error("cannot persist final device report", "error", err)
+		aliveIPs = nil
+	}
+	traffic := s.tracker.FlushTraffic()
 	online := s.tracker.CurrentOnline()
+	for uid, ips := range aliveIPs {
+		online[uid] = len(ips)
+	}
 	status := monitor.Collect()
 	metrics := s.buildMetrics(status)
 	metrics["kernel_status"] = s.kernel.IsRunning()
 
-	if err := s.sink.Report(controlplane.ReportPayload{Traffic: traffic, Alive: aliveIPs, Online: online, CPU: status.CPU, Mem: [2]uint64{status.MemTotal, status.MemUsed}, Swap: [2]uint64{status.SwapTotal, status.SwapUsed}, Disk: [2]uint64{status.DiskTotal, status.DiskUsed}, Metrics: metrics}); err != nil {
-		nlog.Core().Warn("failed to push final report", "error", err)
+	payload := controlplane.ReportPayload{Traffic: traffic, Alive: aliveIPs, Online: online, CPU: status.CPU, Mem: [2]uint64{status.MemTotal, status.MemUsed}, Swap: [2]uint64{status.SwapTotal, status.SwapUsed}, Disk: [2]uint64{status.DiskTotal, status.DiskUsed}, Metrics: metrics}
+	if s.reportJournal != nil {
+		// A failed send remains safely on disk under the same ID; retry after
+		// restart is permitted only because the panel opted into deduplication.
+		if err := s.reportWithJournal(payload); err != nil {
+			nlog.Core().Warn("failed to push idempotent final report; pending batch retained on disk", "error", err)
+			s.tracker.RestoreAliveIPs(aliveIPs)
+		} else {
+			s.confirmDeviceAttempt(aliveIPs)
+		}
+		return
 	}
+	if err := s.reportLegacy(payload); err != nil {
+		nlog.Core().Warn("final legacy report not confirmed; inspect audit records", "error", err)
+		if len(aliveIPs) > 0 {
+			s.tracker.RestoreAliveIPs(aliveIPs)
+		}
+	} else {
+		s.confirmDeviceAttempt(aliveIPs)
+	}
+}
+
+// deviceReportCounts summarizes a snapshot without logging user IDs or IPs.
+func deviceReportCounts(alive map[int][]string) (ips, offline int) {
+	for _, addresses := range alive {
+		ips += len(addresses)
+		if len(addresses) == 0 {
+			offline++
+		}
+	}
+	return
 }
 
 // buildMetrics aggregates node-level metrics to be reported to the panel.
@@ -1062,6 +1497,14 @@ func (s *Service) buildMetrics(status monitor.Status) map[string]interface{} {
 	m["total_connections"] = s.tracker.TotalConnections()
 	m["active_users"] = len(online)
 	m["total_users"] = len(lastUsers)
+
+	// These values describe this individual node, not just its host process.
+	// A healthy machine-level /healthz does not imply all TLS listeners are up.
+	m["runtime_health"] = map[string]interface{}{
+		"listener_running":    s.kernel.IsRunning(),
+		"certificate_present": s.cert != nil && s.cert.HasCert(),
+		"applied_node":        s.appliedConfig() != nil,
+	}
 
 	// Speed
 	m["inbound_speed"] = s.tracker.InboundSpeed()
@@ -1167,6 +1610,15 @@ func computeUserHash(users []model.UserSpec) string {
 	return fmt.Sprintf("%x", h.Sum(nil))
 }
 
+// signalDeviceChange is safe from transport goroutines and never waits for
+// network I/O, tracking, or the service main loop.
+func (s *Service) signalDeviceChange() {
+	select {
+	case s.deviceChanges <- struct{}{}:
+	default:
+	}
+}
+
 // ─── Device management ──────────────────────────────────────────────────
 
 // sendDeviceBatch reports local device snapshot to panel via WS.
@@ -1175,10 +1627,9 @@ func (s *Service) sendDeviceBatch() {
 		return
 	}
 
-	devices := s.tracker.FlushAliveIPs()
-	// FlushAliveIPs returns nil if no changes since last flush
-	if devices == nil {
-		nlog.Core().Debug("device snapshot unchanged, skipping")
+	devices := s.tracker.FlushWSAliveIPs()
+	if len(devices) == 0 {
+		nlog.Core().Debug("no device snapshot to send")
 		return
 	}
 	s.sink.ReportDevices(s.wsClient, devices)
@@ -1209,16 +1660,7 @@ func validateNodeRuntime(cfg *config.Config, kcfgSupported []string, spec *model
 }
 
 func validateTLSRequirements(spec *model.NodeSpec, tls kernel.TLSCert, kernelType string) error {
-	needsCert := false
-	switch spec.Protocol {
-	case "hysteria", "hysteria2", "tuic", "anytls":
-		needsCert = true
-	case "trojan":
-		if spec.TLS != 2 {
-			needsCert = true
-		}
-	}
-	if needsCert && !hasUsableTLSConfig(spec, tls) {
+	if requiresCertificate(spec) && !hasUsableTLSConfig(spec, tls) {
 		return fmt.Errorf("protocol %q requires TLS certificate files", spec.Protocol)
 	}
 	if spec.TLS == 2 {
@@ -1310,4 +1752,43 @@ func stringValue(v any) string {
 	default:
 		return ""
 	}
+}
+
+// retryLegacyUnsent drains at most four proven-unsent batches after a fresh
+// report succeeds. No previous ambiguous audit record is replayed.
+func (s *Service) retryLegacyUnsent(payload controlplane.ReportPayload) error {
+	if s.cfg == nil || s.cfg.Kernel.ConfigDir == "" {
+		return nil
+	}
+	j, err := reportjournal.Open(filepath.Join(s.cfg.Kernel.ConfigDir, "unconfirmed-reports"))
+	if err != nil {
+		return err
+	}
+	batches, err := j.LegacyRetryable()
+	if err != nil {
+		return err
+	}
+	if len(batches) > 4 {
+		batches = batches[:4]
+	}
+	for _, batch := range batches {
+		if err := j.BeginLegacyRetry(batch.ID); err != nil {
+			return err
+		}
+		attempt := payload
+		attempt.Traffic = batch.Traffic
+		if err := s.sink.Report(attempt); err != nil {
+			if panel.IsReportNotSent(err) {
+				if markErr := j.MarkLegacyRetryable(batch.ID); markErr != nil {
+					return markErr
+				}
+			}
+			return fmt.Errorf("legacy retry batch %s: %w", batch.ID, err)
+		}
+		if err := j.RemoveLegacyAudit(batch.ID); err != nil {
+			return err
+		}
+		nlog.Core().Info("proven-unsent legacy traffic batch recovered", "batch_id", batch.ID)
+	}
+	return nil
 }

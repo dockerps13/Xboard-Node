@@ -430,9 +430,13 @@ func mergeCustomSingboxRoute(cfg M, customRoute map[string]any) {
 }
 
 func buildInbound(nc *model.NodeSpec, users []model.UserSpec, tc kernel.TLSCert) M {
+	listenAddr := nc.ListenIP
+	if listenAddr == "" {
+		listenAddr = "::"
+	}
 	base := M{
 		"tag":         nc.Protocol + "-in",
-		"listen":      "::",
+		"listen":      listenAddr,
 		"listen_port": nc.ServerPort,
 	}
 
@@ -445,7 +449,7 @@ func buildInbound(nc *model.NodeSpec, users []model.UserSpec, tc kernel.TLSCert)
 		return buildVLESS(base, nc, users, tc)
 	case "trojan":
 		return buildTrojan(base, nc, users, tc)
-	case "hysteria":
+	case "hysteria", "hysteria2":
 		return buildHysteria(base, nc, users, tc)
 	case "tuic":
 		return buildTUIC(base, nc, users, tc)
@@ -466,9 +470,13 @@ func buildInbound(nc *model.NodeSpec, users []model.UserSpec, tc kernel.TLSCert)
 
 func buildMieru(base M, nc *model.NodeSpec, users []model.UserSpec) M {
 	base["type"] = "mieru"
-	if nc.Transport != "" {
-		base["transport"] = nc.Transport
+	// The embedded Mieru inbound requires an explicit transport even when
+	// XBoard omits it. Default to TCP rather than generating a broken listener.
+	transport := strings.ToUpper(strings.TrimSpace(nc.Transport))
+	if transport == "" {
+		transport = "TCP"
 	}
+	base["transport"] = transport
 	if nc.TrafficPattern != "" {
 		base["traffic_pattern"] = nc.TrafficPattern
 	}
@@ -637,7 +645,7 @@ func buildTrojan(base M, nc *model.NodeSpec, users []model.UserSpec, tc kernel.T
 }
 
 func buildHysteria(base M, nc *model.NodeSpec, users []model.UserSpec, tc kernel.TLSCert) M {
-	if nc.Version == 2 {
+	if nc.Version == 2 || nc.Protocol == "hysteria2" {
 		base["type"] = "hysteria2"
 
 		userList := make([]M, 0, len(users))
@@ -743,9 +751,20 @@ func buildAnyTLS(base M, nc *model.NodeSpec, users []model.UserSpec, tc kernel.T
 
 func buildNaive(base M, nc *model.NodeSpec, users []model.UserSpec, tc kernel.TLSCert) M {
 	base["type"] = "naive"
+	// The vendored sing-box Naive inbound mutates ALPN on a background
+	// HTTP/2 listener while starting HTTP/3, causing a TLS data race.
+	// Default to stable TCP/HTTP2; QUIC must be enabled explicitly
+	// when its upstream TLS initialization is fixed.
+	base["network"] = "tcp"
 
 	userList := make([]M, 0, len(users))
 	for _, u := range users {
+		userList = append(userList, M{
+			"username": u.UUID,
+			"password": u.UUID,
+		})
+		// Preserve existing numeric logins during upgrades. Both identities
+		// resolve to the same accounting user through setTrackerUsers.
 		userList = append(userList, M{
 			"username": strconv.Itoa(u.ID),
 			"password": u.UUID,
@@ -802,6 +821,9 @@ func applyTransport(base M, nc *model.NodeSpec) {
 	}
 
 	transport := M{"type": nc.Network}
+	if nc.Network == "h2" {
+		transport["type"] = "http"
+	}
 
 	if nc.NetworkSettings != nil {
 		switch nc.Network {
