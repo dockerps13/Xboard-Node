@@ -57,18 +57,18 @@ type Xray struct {
 
 	// mu protects instance, limitDispatcher, users, protocol, inboundTag,
 	// lastKernelHash, and cumTraffic. Never held during slow I/O.
-	mu              sync.Mutex
-	instance        *xrayCore.Instance
-	limitDispatcher *LimitDispatcher
-	users           []model.UserSpec
-	nodeConfig      *model.NodeSpec
-	tls             kernel.TLSCert
-	protocol        string
-	inboundTag      string
-	lastKernelHash  string
-	cumTraffic      map[int][2]int64
-	speedLimitFunc  func(string) *rate.Limiter
-	admissionFunc   func(userID int, sourceIP string, limit int) (func(), bool)
+	mu               sync.Mutex
+	instance         *xrayCore.Instance
+	limitDispatcher  *LimitDispatcher
+	users            []model.UserSpec
+	nodeConfig       *model.NodeSpec
+	tls              kernel.TLSCert
+	protocol         string
+	inboundTag       string
+	lastKernelHash   string
+	cumTraffic       map[int][2]int64
+	speedLimitFunc   func(string) *rate.Limiter
+	admissionFunc    func(userID int, sourceIP string, limit int) (func(), bool)
 	deviceChangeFunc func()
 
 	// running is set after a successful Start and cleared before shutdown.
