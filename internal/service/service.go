@@ -143,6 +143,14 @@ func New(cfg *config.Config) *Service {
 	return newService(cfg, cp)
 }
 
+// SetAdmissionFunc wires the shared per-machine admission authority before Run.
+// Standalone services are unchanged unless explicitly configured.
+func (s *Service) SetAdmissionFunc(fn func(userID int, sourceIP string, limit int) (func(), bool)) {
+	if k, ok := s.kernel.(interface{ SetAdmissionFunc(func(userID int, sourceIP string, limit int) (func(), bool)) }); ok {
+		k.SetAdmissionFunc(fn)
+	}
+}
+
 // NewWithControlPlane creates a Service with an externally-provided
 // ControlPlane. Used by the machine orchestrator to inject a
 // MachinePanelControlPlane with WS mux routing.
