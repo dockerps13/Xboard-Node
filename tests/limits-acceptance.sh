@@ -35,18 +35,19 @@ run_suite() {
   fi
 }
 
+run_suite "Atomic shared-machine device reservation and concurrent admission" ./internal/devicegate
 run_suite "User speed limiter and limit configuration" ./internal/limiter
-run_suite "Sing-box TCP/UDP speed and device limits" ./internal/kernel/singbox -run 'Test(LimitedTCPWriteAcrossBursts|SharedLimiterAcrossTCPConnections|UDPUnwrapAccountingDirections|UDPPacketBudgetLargerThanBurst|UDPPacketBudgetCancellation|UDPPacketBudgetInvalidBurst|LimitedUDPDoesNotAdvertiseReplaceableIO|GlobalDeviceAliasesCountOnce|GlobalDeviceAliasesDoNotConsumeExtraSlots|RemovedUserGlobalDevicesAreDiscarded|TrafficAccountingSurvivesRetiredTrackerArchive)'
-run_suite "Xray device admission, concurrency and traffic tracking" ./internal/kernel/xray -run 'Test(LimitDispatcher_|DispatcherConcurrentAdmission|DispatcherGlobalDeviceUnion|XrayGetUserTrafficUsesBuiltInStatsAndDispatcherState|XrayUpdateBandwidthLimits)'
+run_suite "Sing-box TCP/UDP speed, admission and device change notification" ./internal/kernel/singbox -run 'Test(DeviceEventsOnSingBoxConnectionAdmitAndClose|NoDeviceEventOnRejectedSingBoxAdmission|SharedMachineAdmissionRejectsThirdCrossProtocolIP|LimitedTCPWriteAcrossBursts|SharedLimiterAcrossTCPConnections|UDPUnwrapAccountingDirections|UDPPacketBudgetLargerThanBurst|UDPPacketBudgetCancellation|UDPPacketBudgetInvalidBurst|LimitedUDPDoesNotAdvertiseReplaceableIO|GlobalDeviceAliasesCountOnce|GlobalDeviceAliasesDoNotConsumeExtraSlots|RemovedUserGlobalDevicesAreDiscarded|TrafficAccountingSurvivesRetiredTrackerArchive)'
+run_suite "Xray device admission, notification, concurrency and traffic tracking" ./internal/kernel/xray -run 'Test(DeviceEventsOnXrayAdmitAndClose|XraySharedAdmissionUsesCanonicalUserID|LimitDispatcher_|DispatcherConcurrentAdmission|DispatcherGlobalDeviceUnion|XrayGetUserTrafficUsesBuiltInStatsAndDispatcherState|XrayUpdateBandwidthLimits)'
 # Run full tracker/journal packages; a narrow name filter previously ran zero tests.
 run_suite "Online devices, IPv4/IPv6 normalization, traffic deltas and offline recovery" ./internal/tracker
 run_suite "Traffic journal, persistence and crash recovery" ./internal/reportjournal
-run_suite "Panel device reports and idempotent traffic delivery" ./internal/service ./internal/panel -run '^Test(DeviceRecoveryAfterRestart|IdempotentReportRetriesSameDiskBatchIDAfterRestart|IdempotentStorageFailureRestoresCountersWithoutSending|JournalDeviceSnapshotHasIndependentReport|DeviceReportCounts|LegacyReportQuarantinesAmbiguousFailureWithoutReplay|LegacyReportStorageFailurePreventsSend|JournalRetryPreservesBatchIdentityAcrossRestart|JournalBacklogDrainsAtBoundedRate|ReportBatchIDIsOptInAndRawBytesUnchanged|IdempotentReportDoesNotAcceptLegacyOrMismatchedReceipt)$'
+run_suite "Panel device reports, event coalescing and idempotent traffic delivery" ./internal/service ./internal/panel -run '^Test(DeviceChangeSignalCoalescesWithoutBlocking|DeviceRecoveryAfterRestart|IdempotentReportRetriesSameDiskBatchIDAfterRestart|IdempotentStorageFailureRestoresCountersWithoutSending|JournalDeviceSnapshotHasIndependentReport|DeviceReportCounts|LegacyReportQuarantinesAmbiguousFailureWithoutReplay|LegacyReportStorageFailurePreventsSend|JournalRetryPreservesBatchIdentityAcrossRestart|JournalBacklogDrainsAtBoundedRate|ReportBatchIDIsOptInAndRawBytesUnchanged|IdempotentReportDoesNotAcceptLegacyOrMismatchedReceipt)$'
 # Loopback encrypted client roundtrips validate protocol and byte accounting.
 run_suite "Encrypted loopback client traffic and per-user accounting" ./internal/kernel/singbox -run '^TestProtocolClientRoundTrip$'
 
 echo "===== Summary =====" | tee -a "$LOG"
-grep -E '^(PASS|FAIL): ' "$LOG" | tail -n 7
+grep -E '^(PASS|FAIL): ' "$LOG" | tail -n 8
 echo "Report: $LOG"
 echo "NOTE: This suite uses isolated fixtures only. It does NOT prove production panel quota exhaustion, multi-device public-IP behavior, or measured live throughput." | tee -a "$LOG"
 exit "$failed"

@@ -12,12 +12,20 @@ final build input.
   tests added; parent code merge `6040998`.
 - [x] Full GitHub Actions validation of pre-merge implementation and added
   lifecycle tests passed on `953c423` (run 44897748549).
-- [ ] Full validation of the **final candidate commit** passes: formatting,
-  Go test, race checks, vet, Linux amd64/arm64 builds, installer safety,
-  Redis reservation tests and mixed protocol load.
+- [x] Full CI validation of interim candidate `6ef1348ebc1648bccbdbaf8da2ba3ba761823099` passed (GitHub Actions run `44974751757`). This includes formatting, tests, race, vet, amd64/arm64 build, installer, Redis primitive and mixed protocol load.
+- [ ] Re-run full validation on the **final frozen release commit**; the interim result does not approve a different commit.
 - [ ] Final artifacts have an immutable SOURCE_COMMIT and verified SHA256SUMS.
 - [ ] Installation, checksum validation and rollback tested using those exact
   candidate binaries.
+
+## Real-world staging evidence (partial, user-observed; 2026-11-22)
+
+- AWS staging machine `ip-172-31-42-230`, machine_id 24, ran `v1.0.2-rc-devicefix` (binary SHA256 `69e66a495aac8dbca1aea0f4484e0d91eb5775fb01a4bbbf87e571cf57eeae46`). Its banner is a manually set version and does not independently prove embedded git commit identity.
+- `systemctl restart xboard-node` changed MainPID `723352` to `727632`; service was `active` after 10 seconds with no journal warnings for the preceding two minutes.
+- User tested two simultaneously functioning devices with distinct public IPs; a third different-IP device could not use the proxy. After one of the first two disconnected, third became usable. The XBoard display stayed at `2/2`. A repeated test after restart again admitted the first two and rejected the third. This validates the **observed same-machine scenario**, not cross-VPS quota, all protocols, or long-lived disconnect behavior.
+- Historical node log showed successful reporting from SOCKS5+TLS: `node_id=21 machine_id=24 device_report_users=1 device_report_ips=2` over repeated minute intervals. Xray-side traffic increments were confirmed in an earlier test.
+- The fast WS event notification candidate `6ef1348` **was not on that AWS host** at the time of the above tests. Its end-to-end latency, offline delivery and actual browser auto-refresh remain unverified.
+- P0 blocks remain: **cross-VPS atomic device reservation**, actual XBoard billing idempotency and offline/empty-state behavior, multi-node/mixed-kernel churn, 24h soak, exact final release binary hashes.
 
 ## Actual machine/node acceptance (not satisfied by CI)
 
@@ -49,6 +57,13 @@ final build input.
   and actual traffic reconciliation.
 - [ ] Installer upgrade/automatic rollback verified against existing
   configuration and credentials without deleting pending traffic journals.
+
+## Next verification order
+
+1. Test pinned `6ef1348` or a newer CI-clean candidate in isolated AWS staging: WS connection/close changes, empty offline snapshot, panel browser without refresh, no billing behavior changes. Record timestamps and identify whether the panel consumes `report.devices`.
+2. Implement the authenticated centralized Redis device lease API and node-side acquire/renew/release before claiming cross-VPS strict 2/2. The existing `integrations/xboard-device-snapshots` Lua primitive alone is insufficient.
+3. Validate real XBoard report-ID deduplication, duplicate ACK/lost HTTP response, queue crash and rollback against a backed-up panel. Do not replay ambiguous legacy traffic as a new charge.
+4. Repeat 24h soak, upgrade/rollback and artifact checksum validation against one frozen SHA, then review all remaining boxes.
 
 ## Release control
 
