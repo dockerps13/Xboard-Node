@@ -138,6 +138,27 @@ func (x *Xray) Start(nodeConfig *model.NodeSpec, users []model.UserSpec, tls ker
 		return fmt.Errorf("create xray: %w", err)
 	}
 
+	// Install user identities and the admission gate BEFORE starting listeners.
+	// Otherwise a connection arriving during instance.Start could bypass the
+	// machine-wide limit until Phase 4 has completed.
+	if ld != nil {
+		emailToUID := make(map[string]int, len(users)*2)
+		deviceLimits := make(map[string]int)
+		for _, u := range users {
+			email := userEmail(u.ID)
+			emailToUID[email] = u.ID
+			emailToUID[u.UUID] = u.ID
+			if u.DeviceLimit > 0 {
+				deviceLimits[email] = u.DeviceLimit
+				deviceLimits[u.UUID] = u.DeviceLimit
+			}
+		}
+		ld.UpdateLimits(emailToUID, deviceLimits, nil)
+		if x.admissionFunc != nil {
+			ld.SetAdmissionFunc(x.admissionFunc)
+		}
+	}
+
 	// ── Phase 3: Start new (no lock, potentially slow) ──────────────────
 	if err := startWithTimeout(inst, startTimeout); err != nil {
 		inst.Close()
