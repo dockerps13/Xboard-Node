@@ -27,6 +27,12 @@ final build input.
 - The fast WS event notification candidate `6ef1348` **was not on that AWS host** at the time of the above tests. Its end-to-end latency, offline delivery and actual browser auto-refresh remain unverified.
 - P0 blocks remain: **cross-VPS atomic device reservation**, actual XBoard billing idempotency and offline/empty-state behavior, multi-node/mixed-kernel churn, 24h soak, exact final release binary hashes.
 
+## Billing concurrency regression coverage
+
+- [x] Added an isolated HTTP integration test for two simultaneous node-scoped journals sharing one simulated atomic panel ledger. Each node sends a report, the panel commits its charge but loses the response, and each client restarts with its original on-disk batch ID. The test asserts two separate node-scoped charges, zero duplicate debit and zero pending batches after the retry.
+- [ ] Execute this test and the full offline acceptance suite on the final candidate SHA; a committed test is not yet a passing test.
+- [ ] Verify the actual XBoard Laravel endpoint, transaction indexes, async queue job, DB deductions and Redis notifications with a backed-up test panel. A simulated idempotent ledger **does not prove** the production panel implements deduplication.
+
 ## Actual machine/node acceptance (not satisfied by CI)
 
 - [ ] On the AWS staging machine, disable the temporary TCP `socat` listeners
