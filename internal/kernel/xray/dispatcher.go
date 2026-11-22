@@ -72,13 +72,13 @@ type LimitDispatcher struct {
 
 	// limitedUsers: users with device limit > 0, protected by mu.
 	// Needs deterministic IP ordering for kick decisions.
-	mu            sync.RWMutex
-	limitedIPs    map[string]map[string]int // email → sourceIP → refcount
-	deviceLimits  map[string]int            // email → max devices
-	emailToUID    map[string]int            // email → panel user ID
-	globalDevices map[int]map[string]bool
-	globalUpdated time.Time
-	admissionFunc func(userID int, sourceIP string, limit int) (func(), bool)
+	mu               sync.RWMutex
+	limitedIPs       map[string]map[string]int // email → sourceIP → refcount
+	deviceLimits     map[string]int            // email → max devices
+	emailToUID       map[string]int            // email → panel user ID
+	globalDevices    map[int]map[string]bool
+	globalUpdated    time.Time
+	admissionFunc    func(userID int, sourceIP string, limit int) (func(), bool)
 	deviceChangeFunc func()
 
 	// unlimitedIPs: users without device limit — sync.Map for lock-free access.
