@@ -54,7 +54,7 @@ final class IdempotentServerReportService
                 throw new DomainException('report_id already used with a different payload');
             }
             if ($existing->status === 'pending') {
-                ApplyIdempotentServerReportJob::dispatch((int) $existing->id)->onQueue('idempotent_traffic');
+                ApplyIdempotentServerReportJob::dispatch((int) $existing->id)->onConnection('redis_idempotent')->onQueue('idempotent_traffic');
             }
             return ['report_id' => $reportId, 'accepted' => true];
         }
@@ -108,7 +108,7 @@ final class IdempotentServerReportService
 
         // Dispatch after commit. If dispatch fails, retrying the same HTTP
         // request or running the pending-recovery command is safe.
-        ApplyIdempotentServerReportJob::dispatch($recordId)->onQueue('idempotent_traffic');
+        ApplyIdempotentServerReportJob::dispatch($recordId)->onConnection('redis_idempotent')->onQueue('idempotent_traffic');
 
         return ['report_id' => $reportId, 'accepted' => true];
     }
