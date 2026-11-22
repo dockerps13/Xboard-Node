@@ -98,7 +98,7 @@ jobs:
           push: true
           platforms: linux/amd64,linux/arm64
           tags: |
-            ghcr.io/dockerps13/xboard-node:latest
+            ${{ github.ref == 'refs/tags/v1.0.2' && 'ghcr.io/dockerps13/xboard-node:latest' || '' }}
             ghcr.io/dockerps13/xboard-node:${{ github.sha }}
             ${{ startsWith(github.ref, 'refs/tags/') && format('ghcr.io/dockerps13/xboard-node:{0}', github.ref_name) || '' }}
 
@@ -108,7 +108,7 @@ jobs:
     needs: build
     # Only the explicitly approved stable version can create a Release. This
     # prevents RC/Beta tags from being published or marked latest.
-    if: github.ref == 'refs/tags/v1.0.1'
+    if: github.ref == 'refs/tags/v1.0.2'
     permissions:
       contents: write
     steps:
@@ -123,7 +123,7 @@ jobs:
           SOURCE_COMMIT: ${{ github.sha }}
         run: |
           set -euo pipefail
-          test "${GITHUB_REF_NAME}" = "v1.0.1"
+          test "${GITHUB_REF_NAME}" = "v1.0.2"
           cp install.sh dist/install.sh
           printf '%s\n' "$SOURCE_COMMIT" > dist/SOURCE_COMMIT
           cp CHANGELOG.md dist/CHANGELOG
