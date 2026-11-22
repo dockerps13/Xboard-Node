@@ -13,6 +13,7 @@ one pinned commit.
   does not change UDP proxy handling.
 - Add lifecycle and port conflict regression tests for the TCP listener.
 - Add event-triggered device snapshot updates for Xray and Sing-box over the existing WebSocket transport, with 350ms coalescing. Normal traffic billing and its report interval remain unchanged. Panel-side event handling/browser refresh must be independently verified.
+- Add overflow-checked raw and rate-adjusted billing counters for the optional Laravel idempotent integration, with isolated PHP boundary tests. This integration is not deployed or enabled on the live panel.
 - Add concurrent multi-node HTTP billing replay regression: separate journals with lost ACKs replay the original report IDs and an idempotent test ledger charges each node exactly once. Actual XBoard panel acceptance is still required.
 - Fix Xray SOCKS5+TLS and HTTP user traffic accounting: Xray binds user statistics to the authenticated login (UUID), rather than the node's synthetic user@ID key. Add counter identity regression tests. Historical unreported traffic is not automatically back-billed.
 - Preserve the existing protocol, limiter, traffic journal, installer and
