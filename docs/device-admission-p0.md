@@ -25,6 +25,10 @@ In-memory Registry state cannot coordinate different machines. Implement an auth
 
 Do not confuse asynchronous online-device reporting (which can show 3/2) with admission control. Panel changes and data migrations must be tested on a backed-up staging copy before enabling live enforcement.
 
+## Validation provenance
+
+Full P0 acceptance uses the Actions workflow with race, mixed-protocol load, and release artifact build enabled. The in-memory gate still requires a live three-distinct-IP cross-protocol test on the staging AWS machine.
+
 ## Release gate
 
 Status **P0 OPEN** until a third distinct IP is rejected on *every* protocol and *every* participating machine, and two simultaneous accepted IPs continue to work. Devices behind one public IP are counted as one because the current policy is IP-based, not a hardware fingerprint.
