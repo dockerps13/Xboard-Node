@@ -12,6 +12,7 @@ one pinned commit.
   using direct TCP port checks. It is off by default, is not QUIC RTT, and
   does not change UDP proxy handling.
 - Add lifecycle and port conflict regression tests for the TCP listener.
+- Add event-triggered device snapshot updates for Xray and Sing-box over the existing WebSocket transport, with 350ms coalescing. Normal traffic billing and its report interval remain unchanged. Panel-side event handling/browser refresh must be independently verified.
 - Fix Xray SOCKS5+TLS and HTTP user traffic accounting: Xray binds user statistics to the authenticated login (UUID), rather than the node's synthetic user@ID key. Add counter identity regression tests. Historical unreported traffic is not automatically back-billed.
 - Preserve the existing protocol, limiter, traffic journal, installer and
   kernel regression suites from the development baseline.
