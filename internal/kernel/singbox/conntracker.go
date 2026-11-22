@@ -141,8 +141,8 @@ type ConnTracker struct {
 	speedLimitFunc atomic.Pointer[func(uuid string) *rate.Limiter]
 
 	// deviceLimitFunc resolves a user UUID to their device limit.
-	deviceLimitFunc atomic.Pointer[func(uuid string) (int, bool)]
-	admissionFunc   atomic.Pointer[func(userID int, sourceIP string, limit int) (func(), bool)]
+	deviceLimitFunc  atomic.Pointer[func(uuid string) (int, bool)]
+	admissionFunc    atomic.Pointer[func(userID int, sourceIP string, limit int) (func(), bool)]
 	deviceChangeFunc atomic.Pointer[func()]
 
 	// Multi-node device state from panel
