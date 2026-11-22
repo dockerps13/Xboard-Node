@@ -68,6 +68,7 @@ type SingBox struct {
 	// deviceLimitFunc resolves a user UUID to (limit, hasLimit) for gate-keeping.
 	// Set once by SetDeviceLimitFunc and forwarded to every new ConnTracker.
 	deviceLimitFunc func(string) (int, bool)
+	admissionFunc func(userID int, sourceIP string, limit int) (func(), bool)
 
 	// trackerRegistered prevents duplicate AppendTracker calls on the same
 	// Router instance during Reload. Reset to false on full restart.
@@ -208,6 +209,9 @@ func (s *SingBox) Start(nodeConfig *model.NodeSpec, users []model.UserSpec, tls 
 	}
 	if s.deviceLimitFunc != nil {
 		s.connTracker.SetDeviceLimitFunc(s.deviceLimitFunc)
+	}
+	if s.admissionFunc != nil {
+		s.connTracker.SetAdmissionFunc(s.admissionFunc)
 	}
 
 	s.trackerRegistered = false
@@ -575,6 +579,16 @@ func (s *SingBox) SetDeviceLimitFunc(fn func(uuid string) (int, bool)) {
 	s.deviceLimitFunc = fn
 	if s.connTracker != nil {
 		s.connTracker.SetDeviceLimitFunc(fn)
+	}
+}
+
+// SetAdmissionFunc attaches the shared machine-mode IP admission authority.
+func (s *SingBox) SetAdmissionFunc(fn func(userID int, sourceIP string, limit int) (func(), bool)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.admissionFunc = fn
+	if s.connTracker != nil {
+		s.connTracker.SetAdmissionFunc(fn)
 	}
 }
 
