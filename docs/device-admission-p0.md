@@ -8,16 +8,16 @@ In machine mode, the same account was configured with a limit of two distinct pu
 
 `internal/devicegate.Registry` performs a single-lock check-and-reserve by (panel/machine scope, user ID, normalized client IP). A release callback is per connection and idempotent. Multiple protocols on one IP share one slot; different user/panel scopes are isolated; concurrent distinct IPs cannot exceed the cap. The new tests exercise saturation, release order, normalization, invalid inputs, and 100 concurrent admissions.
 
-**Important: the new Registry is not wired into live kernels.** Merging this PR alone does not change actual node device enforcement. It is an independent, testable foundation. Do not mark the 3/2 reproduction fixed or publish a stable tag based on its tests.
+**Stage 2 candidate is now wired in the same PR for machine mode**, but still requires full CI and real staging validation. It must not be considered fixed in production until the mixed-protocol 3/2 reproduction is rerun using a pinned build. Do not publish a stable tag based only on unit tests.
 
-## Stage 2: per-machine integration (required)
+## Stage 2: per-machine integration (implemented as candidate, acceptance pending)
 
-- Orchestrator owns a Registry per authenticated machine/panel and injects it into each service, including after node restart or kernel switching.
-- Sing-box must reserve before accepting routed TCP/UDP traffic and release the exact reservation on every connection close and setup failure.
-- Xray must reserve after the authenticated user and source IP are available, before passing traffic to outbound; release on connection teardown and every failure path.
-- Use the panel's user ID consistently across both kernels; never use protocol login aliases to scope separate quotas.
-- Add mixed-kernel tests: SOCKS5+TLS (Xray) + VLESS (sing-box), concurrent different IPs, same IP, node switching, forced close, reload, and disconnect.
-- Do not reuse an unverified stale online-IP snapshot as an atomic reservation.
+- [x] Orchestrator owns a Registry per authenticated machine/panel and injects it into each service, including after node restart or kernel switching.
+- [x] Sing-box reserves in routed TCP/UDP admission and releases on connection close and setup failure.
+- [x] Xray reserves after authenticated user/source-IP lookup and before outbound dispatch; releases on normal close and errors.
+- [x] Use panel user ID across both kernels; no separate quota per protocol alias.
+- [ ] Run end-to-end mixed-kernel staging acceptance: SOCKS5+TLS (Xray) + VLESS (sing-box), distinct IPs, same IP, node switching, forced close, reload, and disconnect. Unit tests cover individual kernel callback wiring only.
+- [x] The shared admission registry is distinct from asynchronous panel IP snapshots; panel snapshots are not an atomic reservation.
 
 ## Stage 3: cross-server strict mode (required)
 
