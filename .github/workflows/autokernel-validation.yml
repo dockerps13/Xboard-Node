@@ -6,6 +6,7 @@ on:
       - feature/autokernel-stage1
       - 'feature/autokernel-*'
       - 'feature/v102-release-*'
+      - 'feature/v102-device-*'
   workflow_dispatch:
 
 permissions:
