@@ -13,6 +13,7 @@ one pinned commit.
   does not change UDP proxy handling.
 - Add lifecycle and port conflict regression tests for the TCP listener.
 - Add event-triggered device snapshot updates for Xray and Sing-box over the existing WebSocket transport, with 350ms coalescing. Normal traffic billing and its report interval remain unchanged. Panel-side event handling/browser refresh must be independently verified.
+- Bind Laravel idempotent billing accept/recovery/job dispatches to an isolated Redis queue connection `redis_idempotent` with staging-only 240-second retry_after and 210-second Horizon timeout guidance; legacy production Redis retry_after=90 remains untouched. Added source contract tests for queue wiring.
 - Route optional Laravel idempotent ledger jobs to a dedicated `idempotent_traffic` queue; production `traffic_fetch` Horizon workers have a 30-second timeout, incompatible with a 180-second atomic ledger job. Deployment remains disabled pending dedicated-worker and database acceptance.
 - Add overflow-checked raw and rate-adjusted billing counters for the optional Laravel idempotent integration, with isolated PHP boundary tests. This integration is not deployed or enabled on the live panel.
 - Add concurrent multi-node HTTP billing replay regression: separate journals with lost ACKs replay the original report IDs and an idempotent test ledger charges each node exactly once. Actual XBoard panel acceptance is still required.
