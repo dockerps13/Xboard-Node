@@ -180,17 +180,17 @@ func newService(cfg *config.Config, cp controlplane.ControlPlane) *Service {
 	st := limiter.NewSpeedTracker(l)
 
 	return &Service{
-		cfg:          cfg,
-		source:       cp,
-		sink:         cp,
-		kernel:       k,
-		tracker:      tracker.New(),
-		limiter:      l,
-		speedTracker: st,
-		cert:         certMgr,
-		wsEvents:     make(chan controlplane.Event, 16),
-		wsStatusCh:   make(chan controlplane.StatusChange, 4),
-		pullResults:  make(chan pullResult, 1),
+		cfg:           cfg,
+		source:        cp,
+		sink:          cp,
+		kernel:        k,
+		tracker:       tracker.New(),
+		limiter:       l,
+		speedTracker:  st,
+		cert:          certMgr,
+		wsEvents:      make(chan controlplane.Event, 16),
+		wsStatusCh:    make(chan controlplane.StatusChange, 4),
+		pullResults:   make(chan pullResult, 1),
 		deviceChanges: make(chan struct{}, 1),
 	}
 }
